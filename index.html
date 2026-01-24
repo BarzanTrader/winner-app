@@ -1,0 +1,64 @@
+
+<html lang="en"> 
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Winner</title>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body>
+    
+        <div class="container">
+            <div class="application">
+                <div class="card">
+                    <h1>Winner</h1>
+                    <div class="main-content">EXPENSE TRACKER</div>
+                    <h2>Add expense</h2>
+                    <p id="total">Total: £0.00</p>
+                    <form id="expense-form">
+                        <label>
+                            Amount:
+                            <input type="number" id="amount" placeholder="0.00" required>
+                        </label>
+                    
+                        <label>
+                            Date:
+                            <input type="date" id="date">
+                        </label>
+
+                        <label>
+                            Notes:
+                            <input type="text" id="notes" placeholder="e.g. Groceries">
+
+
+                            <p id="emptyState" class="emptyState">
+                                No expenses yet. Add your first one!
+                            </p>
+                        </label>
+                    
+
+                        <select id="category">
+                            <option value="">select category</option>
+                            <option value="Food">Food</option>
+                            <option value="transport">Transport</option>
+                            <option value="housing">housing</option>
+                            <option value="Bills">Bills</option>
+                            <option value="Other">Other</option>
+                        </select>
+
+                        <button type="submit">Add expense</button>
+                    </form>
+                    
+                    <!-- clear button -->
+                    <button id="clearAllBtn" class="danger">
+                        Clear all expenses
+                    </button>
+
+
+                    <ul id="expense-list"></ul>
+                </div>
+            </div>
+        </div>
+        <script src="script.js"></script>
+    </body>
+</html>
