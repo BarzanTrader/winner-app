@@ -49,6 +49,11 @@
                         <button type="submit">Add expense</button>
                     </form>
                     
+                    <!-- edit button -->
+                    <button id="editBtn" class="edit-btn">
+                        Edit
+                    </button>
+                    
                     <!-- clear button -->
                     <button id="clearAllBtn" class="danger">
                         Clear all expenses
@@ -59,6 +64,42 @@
                 </div>
             </div>
         </div>
+        
+        <!-- Edit Modal -->
+        <div id="editModal" class="modal">
+            <div class="modal-content">
+                <span class="close" id="closeEditModal">&times;</span>
+                <h2>Edit Expense</h2>
+                <form id="edit-form">
+                    <label>
+                        Amount:
+                        <input type="number" id="edit-amount" placeholder="0.00" required>
+                    </label>
+                
+                    <label>
+                        Date:
+                        <input type="date" id="edit-date" required>
+                    </label>
+
+                    <label>
+                        Notes:
+                        <input type="text" id="edit-notes" placeholder="e.g. Groceries" required>
+                    </label>
+                
+                    <select id="edit-category" required>
+                        <option value="">select category</option>
+                        <option value="Food">Food</option>
+                        <option value="transport">Transport</option>
+                        <option value="housing">housing</option>
+                        <option value="Bills">Bills</option>
+                        <option value="Other">Other</option>
+                    </select>
+
+                    <button type="button" id="saveEditBtn">Save Changes</button>
+                </form>
+            </div>
+        </div>
+        
         <script src="script.js"></script>
     </body>
 </html> 

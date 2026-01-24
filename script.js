@@ -10,6 +10,8 @@ const expenseList = document.getElementById("expense-list");
 const categoryInput = document.getElementById("category");
 const savedExpenses = localStorage.getItem("expenses");
 const clearAllBtn = document.getElementById("clearAllBtn");
+const editBtn = document.getElementById("editBtn");
+let selectedExpense = null;
 
 if (savedExpenses) {
     expenses = JSON.parse(savedExpenses);
@@ -145,16 +147,53 @@ function renderExpenses() {
         // Expense list
         grouped[month].forEach((expense, index) => {
             const li = document.createElement("li");
-            li.textContent = `${expense.note} - £${expense.amount.toFixed(2)} (${expense.category})`;
-
+            li.classList.add("expense-item");
+            li.style.cursor = "pointer";
+            
+            // Make the expense item clickable to select and offer edit
+            li.addEventListener("click", (e) => {
+                // Don't trigger if clicking the delete button
+                if (e.target.tagName === "BUTTON") {
+                    return;
+                }
+                
+                // Remove selection from other items
+                document.querySelectorAll(".expense-item").forEach(item => {
+                    item.classList.remove("selected");
+                });
+                
+                // Select this expense
+                selectedExpense = expense;
+                li.classList.add("selected");
+                
+                // Show edit option prompt
+                const wantsToEdit = confirm(`Edit "${expense.note}"?`);
+                if (wantsToEdit) {
+                    // Populate edit form with selected expense data
+                    document.getElementById("edit-amount").value = selectedExpense.amount;
+                    document.getElementById("edit-date").value = selectedExpense.date;
+                    document.getElementById("edit-notes").value = selectedExpense.note;
+                    document.getElementById("edit-category").value = selectedExpense.category;
+                    
+                    // Show edit modal
+                    document.getElementById("editModal").style.display = "block";
+                }
+            });
+            
+            const expenseText = document.createElement("span");
+            expenseText.textContent = `${expense.note} - £${expense.amount.toFixed(2)} (${expense.category})`;
+            expenseText.style.flex = "1";
+            
             const deleteBtn = document.createElement("button");
             deleteBtn.textContent = "x";
             deleteBtn.style.marginLeft = "8px";
 
-            deleteBtn.addEventListener("click", () => {
+            deleteBtn.addEventListener("click", (e) => {
+                e.stopPropagation(); // Prevent triggering the li click
                 deleteExpense(index, month);
             });
 
+            li.appendChild(expenseText);
             li.appendChild(deleteBtn);
             monthDiv.appendChild(li);
         });
@@ -186,6 +225,11 @@ function deleteExpense(index, monthKey) {
 
     const realIndex = expenses.indexOf(expenseToDelete);
 
+    // Clear selection if deleting the selected expense
+    if (selectedExpense === expenseToDelete) {
+        selectedExpense = null;
+    }
+
     expenses.splice(realIndex, 1);
     localStorage.setItem("expenses", JSON.stringify(expenses));
 
@@ -203,6 +247,83 @@ clearAllBtn.addEventListener("click", () => {
     localStorage.removeItem("expenses");
     renderExpenses();
     calculateTotal();
+});
+
+// ----------------------
+// EDIT FUNCTIONALITY
+// ----------------------
+
+editBtn.addEventListener("click", () => {
+    if (!selectedExpense) {
+        alert("Please tap on an expense to select it first");
+        return;
+    }
+    
+    // Populate edit form with selected expense data
+    document.getElementById("edit-amount").value = selectedExpense.amount;
+    document.getElementById("edit-date").value = selectedExpense.date;
+    document.getElementById("edit-notes").value = selectedExpense.note;
+    document.getElementById("edit-category").value = selectedExpense.category;
+    
+    // Show edit modal
+    document.getElementById("editModal").style.display = "block";
+});
+
+document.getElementById("closeEditModal").addEventListener("click", () => {
+    document.getElementById("editModal").style.display = "none";
+});
+
+// Close modal when clicking outside of it
+window.addEventListener("click", (event) => {
+    const modal = document.getElementById("editModal");
+    if (event.target === modal) {
+        modal.style.display = "none";
+    }
+});
+
+document.getElementById("saveEditBtn").addEventListener("click", () => {
+    const editAmount = Number(document.getElementById("edit-amount").value);
+    const editDate = document.getElementById("edit-date").value;
+    const editNotes = document.getElementById("edit-notes").value.trim();
+    const editCategory = document.getElementById("edit-category").value;
+    
+    if (!editNotes) {
+        alert("Please enter an expense name");
+        return;
+    }
+    
+    if (isNaN(editAmount) || editAmount <= 0) {
+        alert("Please enter a valid Amount Greater than 0");
+        return;
+    }
+    
+    if (!editDate) {
+        alert("Please enter a valid date");
+        return;
+    }
+    
+    if (!editCategory) {
+        alert("Please select a category");
+        return;
+    }
+    
+    // Update the selected expense
+    const expenseIndex = expenses.indexOf(selectedExpense);
+    if (expenseIndex !== -1) {
+        expenses[expenseIndex] = {
+            note: editNotes,
+            amount: editAmount,
+            date: editDate,
+            category: editCategory
+        };
+        
+        localStorage.setItem("expenses", JSON.stringify(expenses));
+        selectedExpense = null;
+        
+        renderExpenses();
+        calculateTotal();
+        document.getElementById("editModal").style.display = "none";
+    }
 });
 
 // ----------------------
