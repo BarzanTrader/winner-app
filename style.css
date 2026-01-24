@@ -2,29 +2,30 @@ body {
     font-family:'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif;
     background-color: #f4f4f4;
     margin: 0;
-    padding: 20px;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
+    padding: 10px;
     min-height: 100vh;
 }
 
 .container {
-    background-color: #fff;
-    padding: 20px;
-    border-radius: 5px;
-    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    max-width: 100%;
+    width: 100%;
+    margin: 0 auto;
+    padding: 0;
 }
 
 .application {
-    max-width: 400px;
-    margin: 60px auto;
+    max-width: 100%;
+    width: 100%;
+    margin: 0 auto;
+    padding: 0;
 }
 
 .card {
     background-color: white;
-    padding: 20px;
+    padding: 15px;
     border-radius: 4px;
+    margin-bottom: 15px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
 }
 form{
     display: flex;
@@ -83,14 +84,7 @@ h1 {
 }
 
 .edit-btn {
-    background-color: #3498db;
-    color: white;
-    border: none;
-    padding: 0.75rem;
-    border-radius: 6px;
-    margin-top: 1rem;
-    cursor: pointer;
-    width: 100%;
+    display: none;
 }
 
 .edit-btn:hover {
@@ -204,4 +198,112 @@ li.selected {
     gap: 12px;
     margin-top: 20px;
 }
+
+/* Chart styling */
+.chart-container {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background-color: #f9f9f9;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+}
+
+.chart-container h3 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    text-align: center;
+    color: #333;
+    font-size: 1.1rem;
+}
+
+#MonthlyChart {
+    max-width: 100%;
+    height: 300px !important;
+}
+
+#dashboard {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 15px;
+    margin-top: 15px;
+}
+
+.dashboard-card {
+    background-color: white;
+    padding: 12px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    text-align: center;
+}
+
+.dashboard-card h3 {
+    margin-top: 0;
+    margin-bottom: 0.5rem;
+    color: #333;
+    font-size: 0.85rem;
+    font-weight: bold;
+}
+
+.dashboard-card p {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: bold;
+    color: #df1126;
+}
+
+/* Phone optimization */
+@media (max-width: 768px) {
+    body {
+        padding: 5px;
+    }
     
+    .card {
+        padding: 12px;
+    }
+    
+    #dashboard {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+    
+    .dashboard-card h3 {
+        font-size: 0.9rem;
+    }
+    
+    .dashboard-card p {
+        font-size: 0.9rem;
+    }
+    
+    .modal-content {
+        width: 95%;
+        margin: 5% auto;
+        padding: 15px;
+    }
+    
+    #MonthlyChart {
+        height: 250px !important;
+    }
+    
+    .chart-container {
+        padding: 0.75rem;
+    }
+}
+
+@media (max-width: 480px) {
+    h1 {
+        font-size: 1.5rem;
+    }
+    
+    h2 {
+        font-size: 1.2rem;
+    }
+    
+    input, select, button {
+        font-size: 16px; /* Prevents zoom on iOS */
+    }
+    
+    #MonthlyChart {
+        height: 200px !important;
+    }
+}

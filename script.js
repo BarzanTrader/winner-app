@@ -14,9 +14,17 @@ const editBtn = document.getElementById("editBtn");
 let selectedExpense = null;
 
 if (savedExpenses) {
-    expenses = JSON.parse(savedExpenses);
-    renderExpenses();
-    calculateTotal();
+    try {
+        expenses = JSON.parse(savedExpenses);
+        renderExpenses();
+        calculateTotal();
+        renderChart();
+        updateDashboard();
+    } catch (error) {
+        console.error("Error parsing saved expenses:", error);
+        expenses = [];
+        localStorage.removeItem("expenses");
+    }
 }
 
 form.addEventListener("submit", function (e) {
@@ -57,12 +65,58 @@ form.addEventListener("submit", function (e) {
 
     renderExpenses();
     calculateTotal();
+    renderChart();
+    updateDashboard();
     form.reset();
 });
 
 // ----------------------
 // GROUPING FUNCTIONS
 // ----------------------
+// ----------------------
+// DASHBOARD FUNCTIONS
+// ----------------------
+
+function updateDashboard() {
+    const monthlyTotalEl = document.getElementById("MonthlyTotal");
+    const topcategoryEl = document.getElementById("top-category");
+    const averageExpenseEl = document.getElementById("average-expense");
+    
+    if (!monthlyTotalEl || !topcategoryEl || !averageExpenseEl) {
+        return; // Elements not found yet
+    }
+    
+    const now = new Date();
+    const currentMonth = now.toISOString().slice(0, 7);
+
+    const monthlyExpenses = expenses.filter(exp => exp.date && exp.date.startsWith(currentMonth));
+
+    const total = monthlyExpenses.reduce((sum, e) => sum + e.amount, 0);
+    monthlyTotalEl.textContent = `Total: £${total.toFixed(2)}`;
+
+    const categoryMap = {};
+    monthlyExpenses.forEach(exp => {
+        if (exp.category) {
+            categoryMap[exp.category] = (categoryMap[exp.category] || 0) + exp.amount;
+        }
+    });
+
+    let topCategory = "-";
+    let max = 0;
+    for (let cat in categoryMap) {
+        if (categoryMap[cat] > max) {
+            max = categoryMap[cat];
+            topCategory = cat;
+        }
+    }
+    topcategoryEl.textContent = topCategory;
+    
+    // Calculate average expense per day this month
+    const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const averageExpense = days > 0 ? total / days : 0;
+    averageExpenseEl.textContent = `£${averageExpense.toFixed(2)}`;
+}
+
 
 function getMonthKey(dateString) {
     const date = new Date(dateString);
@@ -177,6 +231,10 @@ function renderExpenses() {
                     
                     // Show edit modal
                     document.getElementById("editModal").style.display = "block";
+                } else {
+                    // Deselect if user cancels
+                    selectedExpense = null;
+                    li.classList.remove("selected");
                 }
             });
             
@@ -225,6 +283,14 @@ function deleteExpense(index, monthKey) {
 
     const realIndex = expenses.indexOf(expenseToDelete);
 
+    // Check if expense was found
+    if (realIndex === -1) {
+        console.error("Expense not found in expenses array");
+        renderExpenses();
+        updateDashboard();
+        return;
+    }
+
     // Clear selection if deleting the selected expense
     if (selectedExpense === expenseToDelete) {
         selectedExpense = null;
@@ -235,6 +301,8 @@ function deleteExpense(index, monthKey) {
 
     renderExpenses();
     calculateTotal();
+    renderChart();
+    updateDashboard();
 }
 
 clearAllBtn.addEventListener("click", () => {
@@ -247,6 +315,8 @@ clearAllBtn.addEventListener("click", () => {
     localStorage.removeItem("expenses");
     renderExpenses();
     calculateTotal();
+    renderChart();
+    updateDashboard();
 });
 
 // ----------------------
@@ -309,21 +379,29 @@ document.getElementById("saveEditBtn").addEventListener("click", () => {
     
     // Update the selected expense
     const expenseIndex = expenses.indexOf(selectedExpense);
-    if (expenseIndex !== -1) {
-        expenses[expenseIndex] = {
-            note: editNotes,
-            amount: editAmount,
-            date: editDate,
-            category: editCategory
-        };
-        
-        localStorage.setItem("expenses", JSON.stringify(expenses));
-        selectedExpense = null;
-        
-        renderExpenses();
-        calculateTotal();
+    if (expenseIndex === -1) {
+        alert("Expense not found. It may have been deleted.");
         document.getElementById("editModal").style.display = "none";
+        selectedExpense = null;
+        renderExpenses();
+        return;
     }
+    
+    expenses[expenseIndex] = {
+        note: editNotes,
+        amount: editAmount,
+        date: editDate,
+        category: editCategory
+    };
+    
+    localStorage.setItem("expenses", JSON.stringify(expenses));
+    selectedExpense = null;
+    
+    renderExpenses();
+    calculateTotal();
+    renderChart();
+    updateDashboard();
+    document.getElementById("editModal").style.display = "none";
 });
 
 // ----------------------
@@ -336,3 +414,87 @@ function calculateTotal() {
     totalEl.textContent = `Total: £${total.toFixed(2)}`;
 }
 
+// ----------------------chart functionality
+
+function getMonthlyTotals() {
+    const map = {};
+    expenses.forEach(e => {
+        if (!e.date || typeof e.date !== 'string') {
+            return; // Skip expenses with invalid dates
+        }
+        const month = e.date.slice(0, 7); // yyyy-mm
+        if (month.length === 7) {
+            map[month] = (map[month] || 0) + e.amount;
+        }
+    });
+    
+    const sortedMonths = Object.keys(map).sort();
+    // Format labels to be more readable (e.g., "2024-01" -> "January 2024")
+    const labels = sortedMonths.map(monthStr => {
+        const [year, month] = monthStr.split('-');
+        const date = new Date(parseInt(year), parseInt(month) - 1);
+        return date.toLocaleString("en-UK", { month: "long", year: "numeric" });
+    });
+    const data = sortedMonths.map(month => map[month]);
+    return {labels, data};
+}
+
+
+let monthlyChart;
+
+function rendermonthlyChart() {
+    const chartElement = document.getElementById("MonthlyChart");
+    if (!chartElement) {
+        console.warn("MonthlyChart element not found");
+        return;
+    }
+    
+    const {labels, data} = getMonthlyTotals();
+    
+    // Don't render if no data
+    if (labels.length === 0 || data.length === 0) {
+        if (monthlyChart) {
+            monthlyChart.destroy();
+            monthlyChart = null;
+        }
+        return;
+    }
+    
+    const ctx = chartElement.getContext("2d");
+
+    if (monthlyChart) {
+        monthlyChart.destroy();
+    }
+    
+    monthlyChart = new Chart(ctx, {
+        type: "bar",
+        data: {
+            labels: labels,
+            datasets: [{
+                label: "Monthly Expenses (£)",
+                data: data,
+                backgroundColor: "rgba(54, 162, 235, 0.6)",
+                borderColor: "rgba(54, 162, 235, 1)",
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        callback: function(value) {
+                            return "£" + value.toFixed(2);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+function renderChart() {
+    rendermonthlyChart();
+}
