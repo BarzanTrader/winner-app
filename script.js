@@ -1,74 +1,190 @@
 console.log("winner app connected");
 
 let expenses = [];
-
-const form = document.getElementById("expense-form");
-const amountInput = document.getElementById("amount");
-const dateInput = document.getElementById("date");
-const notesInput = document.getElementById("notes");
-const expenseList = document.getElementById("expense-list");
-const categoryInput = document.getElementById("category");
-const savedExpenses = localStorage.getItem("expenses");
-const clearAllBtn = document.getElementById("clearAllBtn");
-const editBtn = document.getElementById("editBtn");
 let selectedExpense = null;
 
-if (savedExpenses) {
-    try {
-        expenses = JSON.parse(savedExpenses);
+// Wait for DOM to be fully loaded
+document.addEventListener("DOMContentLoaded", function() {
+    const form = document.getElementById("expense-form");
+    const amountInput = document.getElementById("amount");
+    const dateInput = document.getElementById("date");
+    const notesInput = document.getElementById("notes");
+    const expenseList = document.getElementById("expense-list");
+    const categoryInput = document.getElementById("category");
+    const clearAllBtn = document.getElementById("clearAllBtn");
+    const editBtn = document.getElementById("editBtn");
+    
+    // Load expenses from localStorage
+    const savedExpenses = localStorage.getItem("expenses");
+    if (savedExpenses) {
+        try {
+            expenses = JSON.parse(savedExpenses);
+            renderExpenses();
+            calculateTotal();
+            renderChart();
+            updateDashboard();
+        } catch (error) {
+            console.error("Error parsing saved expenses:", error);
+            expenses = [];
+            localStorage.removeItem("expenses");
+        }
+    } else {
+        // Initialize dashboard even if no expenses
+        updateDashboard();
+    }
+
+    // Form submit event listener
+    form.addEventListener("submit", function (e) {
+        e.preventDefault();
+
+        const name = notesInput.value.trim();
+        const amount = Number(amountInput.value);
+        const date = dateInput.value;
+
+        if (!name) {
+            alert("Please enter an expense name");
+            return;
+        }
+
+        if (isNaN(amount) || amount <= 0) {
+            alert("Please enter a valid Amount Greater than 0");
+            return;
+        }
+
+        if (!date) {
+            alert("Please enter a valid date");
+            return;
+        }
+        if (!categoryInput.value) {
+            alert("Please select a category");
+            return;
+        }
+
+        const expense = {
+            note: name,
+            amount: amount,
+            date: date,
+            category: categoryInput.value
+        };
+
+        expenses.push(expense);
+        localStorage.setItem("expenses", JSON.stringify(expenses));
+
         renderExpenses();
         calculateTotal();
         renderChart();
         updateDashboard();
-    } catch (error) {
-        console.error("Error parsing saved expenses:", error);
+        form.reset();
+    });
+
+    // Get submit button and add input validation
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) {
+        form.addEventListener("input", () => {
+            submitBtn.disabled = !amountInput.value || !dateInput.value || !notesInput.value.trim();
+        });
+        // Initialize button state
+        submitBtn.disabled = !amountInput.value || !dateInput.value || !notesInput.value.trim();
+    }
+
+    // Clear all button event listener
+    clearAllBtn.addEventListener("click", () => {
+        if (expenses.length === 0) return;
+
+        const confirm = window.confirm("Are you sure you want to clear all expenses?");
+        if (!confirm) return;
+
         expenses = [];
         localStorage.removeItem("expenses");
-    }
-}
+        renderExpenses();
+        calculateTotal();
+        renderChart();
+        updateDashboard();
+    });
 
-form.addEventListener("submit", function (e) {
-    e.preventDefault();
+    // Edit button event listener
+    editBtn.addEventListener("click", () => {
+        if (!selectedExpense) {
+            alert("Please tap on an expense to select it first");
+            return;
+        }
+        
+        // Populate edit form with selected expense data
+        document.getElementById("edit-amount").value = selectedExpense.amount;
+        document.getElementById("edit-date").value = selectedExpense.date;
+        document.getElementById("edit-notes").value = selectedExpense.note;
+        document.getElementById("edit-category").value = selectedExpense.category;
+        
+        // Show edit modal
+        document.getElementById("editModal").style.display = "block";
+    });
 
-    const name = notesInput.value.trim();
-    const amount = Number(amountInput.value);
-    const date = dateInput.value;
+    // Modal event listeners
+    document.getElementById("closeEditModal").addEventListener("click", () => {
+        document.getElementById("editModal").style.display = "none";
+    });
 
-    if (!name) {
-        alert("Please enter an expense name");
-        return;
-    }
+    // Close modal when clicking outside of it
+    window.addEventListener("click", (event) => {
+        const modal = document.getElementById("editModal");
+        if (event.target === modal) {
+            modal.style.display = "none";
+        }
+    });
 
-    if (isNaN(amount) || amount <= 0) {
-        alert("Please enter a valid Amount Greater than 0");
-        return;
-    }
-
-    if (!date) {
-        alert("Please enter a valid date");
-        return;
-    }
-    if (!categoryInput.value) {
-        alert("Please select a category");
-        return;
-    }
-
-    const expense = {
-        note: name,
-        amount: amount,
-        date: date,
-        category: categoryInput.value
-    };
-
-    expenses.push(expense);
-    localStorage.setItem("expenses", JSON.stringify(expenses));
-
-    renderExpenses();
-    calculateTotal();
-    renderChart();
-    updateDashboard();
-    form.reset();
-});
+    document.getElementById("saveEditBtn").addEventListener("click", () => {
+        const editAmount = Number(document.getElementById("edit-amount").value);
+        const editDate = document.getElementById("edit-date").value;
+        const editNotes = document.getElementById("edit-notes").value.trim();
+        const editCategory = document.getElementById("edit-category").value;
+        
+        if (!editNotes) {
+            alert("Please enter an expense name");
+            return;
+        }
+        
+        if (isNaN(editAmount) || editAmount <= 0) {
+            alert("Please enter a valid Amount Greater than 0");
+            return;
+        }
+        
+        if (!editDate) {
+            alert("Please enter a valid date");
+            return;
+        }
+        
+        if (!editCategory) {
+            alert("Please select a category");
+            return;
+        }
+        
+        // Update the selected expense
+        const expenseIndex = expenses.indexOf(selectedExpense);
+        if (expenseIndex === -1) {
+            alert("Expense not found. It may have been deleted.");
+            document.getElementById("editModal").style.display = "none";
+            selectedExpense = null;
+            renderExpenses();
+            return;
+        }
+        
+        expenses[expenseIndex] = {
+            note: editNotes,
+            amount: editAmount,
+            date: editDate,
+            category: editCategory
+        };
+        
+        localStorage.setItem("expenses", JSON.stringify(expenses));
+        selectedExpense = null;
+        
+        renderExpenses();
+        calculateTotal();
+        renderChart();
+        updateDashboard();
+        document.getElementById("editModal").style.display = "none";
+    });
+}); // End of DOMContentLoaded
 
 // ----------------------
 // GROUPING FUNCTIONS
@@ -149,11 +265,15 @@ function groupExpensesByMonth() {
 // ----------------------
 
 function renderExpenses() {
+    const expenseList = document.getElementById("expense-list");
+    if (!expenseList) return; // Element not found yet
+    
     expenseList.innerHTML = "";
 
-    const emptyState =
-    document.getElementById("emptyState");
+    const emptyState = document.getElementById("emptyState");
     const totalAmount = document.getElementById("total");
+    
+    if (!emptyState || !totalAmount) return; // Elements not found yet
 
 
 
@@ -305,104 +425,6 @@ function deleteExpense(index, monthKey) {
     updateDashboard();
 }
 
-clearAllBtn.addEventListener("click", () => {
-    if (expenses.length === 0) return;
-
-    const confirm = window.confirm("Are you sure you want to clear all expenses?");
-    if (!confirm) return;
-
-    expenses = [];
-    localStorage.removeItem("expenses");
-    renderExpenses();
-    calculateTotal();
-    renderChart();
-    updateDashboard();
-});
-
-// ----------------------
-// EDIT FUNCTIONALITY
-// ----------------------
-
-editBtn.addEventListener("click", () => {
-    if (!selectedExpense) {
-        alert("Please tap on an expense to select it first");
-        return;
-    }
-    
-    // Populate edit form with selected expense data
-    document.getElementById("edit-amount").value = selectedExpense.amount;
-    document.getElementById("edit-date").value = selectedExpense.date;
-    document.getElementById("edit-notes").value = selectedExpense.note;
-    document.getElementById("edit-category").value = selectedExpense.category;
-    
-    // Show edit modal
-    document.getElementById("editModal").style.display = "block";
-});
-
-document.getElementById("closeEditModal").addEventListener("click", () => {
-    document.getElementById("editModal").style.display = "none";
-});
-
-// Close modal when clicking outside of it
-window.addEventListener("click", (event) => {
-    const modal = document.getElementById("editModal");
-    if (event.target === modal) {
-        modal.style.display = "none";
-    }
-});
-
-document.getElementById("saveEditBtn").addEventListener("click", () => {
-    const editAmount = Number(document.getElementById("edit-amount").value);
-    const editDate = document.getElementById("edit-date").value;
-    const editNotes = document.getElementById("edit-notes").value.trim();
-    const editCategory = document.getElementById("edit-category").value;
-    
-    if (!editNotes) {
-        alert("Please enter an expense name");
-        return;
-    }
-    
-    if (isNaN(editAmount) || editAmount <= 0) {
-        alert("Please enter a valid Amount Greater than 0");
-        return;
-    }
-    
-    if (!editDate) {
-        alert("Please enter a valid date");
-        return;
-    }
-    
-    if (!editCategory) {
-        alert("Please select a category");
-        return;
-    }
-    
-    // Update the selected expense
-    const expenseIndex = expenses.indexOf(selectedExpense);
-    if (expenseIndex === -1) {
-        alert("Expense not found. It may have been deleted.");
-        document.getElementById("editModal").style.display = "none";
-        selectedExpense = null;
-        renderExpenses();
-        return;
-    }
-    
-    expenses[expenseIndex] = {
-        note: editNotes,
-        amount: editAmount,
-        date: editDate,
-        category: editCategory
-    };
-    
-    localStorage.setItem("expenses", JSON.stringify(expenses));
-    selectedExpense = null;
-    
-    renderExpenses();
-    calculateTotal();
-    renderChart();
-    updateDashboard();
-    document.getElementById("editModal").style.display = "none";
-});
 
 // ----------------------
 // TOTAL
