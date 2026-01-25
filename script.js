@@ -33,6 +33,9 @@ function initializeApp() {
     // Get DOM element references
     const domElements = getDOMElements();
     
+    // Initialize dark mode (must be before other setup)
+    initializeDarkMode(domElements.darkModeToggle);
+    
     // Load saved expenses from localStorage
     loadExpensesFromStorage();
     
@@ -54,7 +57,12 @@ function getDOMElements() {
         categoryInput: document.getElementById("category"),
         clearAllBtn: document.getElementById("clearAllBtn"),
         editBtn: document.getElementById("editBtn"),
-        exportBtn: document.getElementById("exportbtn")
+        exportBtn: document.getElementById("exportbtn"),
+        darkModeToggle: document.getElementById("darkModeToggle"),
+        homeTab: document.getElementById("homeTab"),
+        historyTab: document.getElementById("historyTab"),
+        homePage: document.getElementById("homePage"),
+        historyPage: document.getElementById("historyPage")
     };
 }
 
@@ -97,6 +105,8 @@ function setupEventListeners(elements) {
     setupFormListeners(elements);
     setupButtonListeners(elements);
     setupModalListeners();
+    setupDarkModeListener(elements.darkModeToggle);
+    setupNavigationListeners(elements);
 }
 
 // ============================================================================
@@ -285,6 +295,142 @@ function setupButtonListeners(elements) {
     }
 }
 
+// ============================================================================
+// DARK MODE FUNCTIONALITY
+// ============================================================================
+
+/**
+ * Initializes dark mode based on saved preference or system preference
+ * @param {HTMLElement} toggleButton - Dark mode toggle button element
+ */
+function initializeDarkMode(toggleButton) {
+    if (!toggleButton) {
+        console.warn("Dark mode toggle button not found");
+        return;
+    }
+    
+    // Check for saved preference
+    const savedTheme = localStorage.getItem("theme");
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    
+    // Use saved preference, or default to system preference
+    const isDark = savedTheme === "dark" || (!savedTheme && prefersDark);
+    
+    if (isDark) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        updateToggleIcon(toggleButton, true);
+    } else {
+        document.documentElement.setAttribute("data-theme", "light");
+        updateToggleIcon(toggleButton, false);
+    }
+}
+
+/**
+ * Sets up the dark mode toggle button event listener
+ * @param {HTMLElement} toggleButton - Dark mode toggle button element
+ */
+function setupDarkModeListener(toggleButton) {
+    if (!toggleButton) {
+        return;
+    }
+    
+    toggleButton.addEventListener("click", () => {
+        toggleDarkMode(toggleButton);
+    });
+}
+
+/**
+ * Toggles dark mode on/off
+ * @param {HTMLElement} toggleButton - Dark mode toggle button element
+ */
+function toggleDarkMode(toggleButton) {
+    const currentTheme = document.documentElement.getAttribute("data-theme");
+    const isDark = currentTheme === "dark";
+    
+    // Toggle theme
+    if (isDark) {
+        document.documentElement.setAttribute("data-theme", "light");
+        localStorage.setItem("theme", "light");
+        updateToggleIcon(toggleButton, false);
+    } else {
+        document.documentElement.setAttribute("data-theme", "dark");
+        localStorage.setItem("theme", "dark");
+        updateToggleIcon(toggleButton, true);
+    }
+    
+    // Re-render chart with new theme colors
+    if (monthlyChart) {
+        renderChart();
+    }
+}
+
+/**
+ * Updates the dark mode toggle button icon
+ * @param {HTMLElement} toggleButton - Dark mode toggle button element
+ * @param {boolean} isDark - Whether dark mode is active
+ */
+function updateToggleIcon(toggleButton, isDark) {
+    const icon = toggleButton.querySelector(".toggle-icon");
+    if (icon) {
+        icon.textContent = isDark ? "☀️" : "🌙";
+    }
+}
+
+/**
+ * Checks if dark mode is currently active
+ * @returns {boolean} True if dark mode is active
+ */
+function isDarkMode() {
+    return document.documentElement.getAttribute("data-theme") === "dark";
+}
+
+// ============================================================================
+// NAVIGATION FUNCTIONALITY
+// ============================================================================
+
+/**
+ * Sets up navigation tab event listeners
+ * @param {Object} elements - DOM element references
+ */
+function setupNavigationListeners(elements) {
+    if (!elements.homeTab || !elements.historyTab || !elements.homePage || !elements.historyPage) {
+        console.warn("Navigation elements not found");
+        return;
+    }
+    
+    elements.homeTab.addEventListener("click", () => {
+        switchPage("home", elements);
+    });
+    
+    elements.historyTab.addEventListener("click", () => {
+        switchPage("history", elements);
+    });
+}
+
+/**
+ * Switches between pages
+ * @param {string} pageName - Name of the page to show ("home" or "history")
+ * @param {Object} elements - DOM element references
+ */
+function switchPage(pageName, elements) {
+    // Remove active class from all tabs and pages
+    elements.homeTab.classList.remove("active");
+    elements.historyTab.classList.remove("active");
+    elements.homePage.classList.remove("active");
+    elements.historyPage.classList.remove("active");
+    
+    // Add active class to selected tab and page
+    if (pageName === "home") {
+        elements.homeTab.classList.add("active");
+        elements.homePage.classList.add("active");
+    } else if (pageName === "history") {
+        elements.historyTab.classList.add("active");
+        elements.historyPage.classList.add("active");
+        // Render chart when switching to history page
+        renderChart();
+    }
+}
+
 /**
  * Handles clearing all expenses with user confirmation
  */
@@ -346,6 +492,9 @@ function openEditModal(expense) {
     const notesInput = document.getElementById("edit-notes");
     const categoryInput = document.getElementById("edit-category");
     const modal = document.getElementById("editModal");
+    if (modal) {
+        modal.classList.add("show");
+    }
     
     if (!amountInput || !dateInput || !notesInput || !categoryInput || !modal) {
         console.error("Edit modal elements not found");
@@ -356,7 +505,7 @@ function openEditModal(expense) {
     dateInput.value = expense.date || "";
     notesInput.value = expense.note || "";
     categoryInput.value = expense.category || "";
-    modal.style.display = "block";
+    modal.classList.add("show");
 }
 
 /**
@@ -365,7 +514,7 @@ function openEditModal(expense) {
 function closeEditModal() {
     const modal = document.getElementById("editModal");
     if (modal) {
-        modal.style.display = "none";
+        modal.classList.remove("show");
     }
 }
 
@@ -375,7 +524,10 @@ function closeEditModal() {
  */
 function handleModalOutsideClick(event) {
     const modal = document.getElementById("editModal");
-    if (event.target === modal) {
+    if (!modal) return;
+    
+    // Only close if modal is open and click is on the modal backdrop (not content)
+    if (modal.classList.contains("show") && event.target === modal) {
         closeEditModal();
     }
 }
@@ -574,10 +726,22 @@ function createExpenseListItem(expense, index, monthKey) {
     li.classList.add("expense-item");
     li.style.cursor = "pointer";
     
-    // Make expense item clickable for editing
+    // Make expense item clickable for selection and editing
     li.addEventListener("click", (e) => {
+        // Stop event propagation to prevent triggering other click handlers
+        e.stopPropagation();
+        
         if (e.target.tagName === "BUTTON") {
             return; // Don't trigger if clicking delete button
+        }
+        
+        // Check if this expense is already selected BEFORE deselecting others
+        const isAlreadySelected = li.classList.contains("selected") && selectedExpense === expense;
+        
+        if (isAlreadySelected) {
+            // If already selected, open edit modal on second click
+            openEditModal(expense);
+            return;
         }
         
         // Deselect other items
@@ -585,19 +749,9 @@ function createExpenseListItem(expense, index, monthKey) {
             item.classList.remove("selected");
         });
         
-        // Select this expense
+        // First click: just select the expense
         selectedExpense = expense;
         li.classList.add("selected");
-        
-        // Prompt user to edit
-        const wantsToEdit = confirm(`Edit "${expense.note}"?`);
-        if (wantsToEdit) {
-            openEditModal(selectedExpense);
-        } else {
-            // Deselect if user cancels
-            selectedExpense = null;
-            li.classList.remove("selected");
-        }
     });
     
     // Expense text
@@ -933,6 +1087,7 @@ function downloadCSVFile(csvContent) {
  * Renders the monthly expenses chart
  */
 function renderChart() {
+    // Always render - chart will be visible when history page is active
     rendermonthlyChart();
 }
 
@@ -964,11 +1119,8 @@ function rendermonthlyChart() {
         monthlyChart.destroy();
     }
     
-    // Get chart height for gradient (use computed height or default)
-    const chartHeight = chartElement.offsetHeight || 350;
-    
-    // Create gradients for chart bars
-    const gradients = createChartGradients(ctx, chartHeight);
+    // Create chart colors
+    const colors = createChartColors();
     
     // Create and configure chart
     monthlyChart = new Chart(ctx, {
@@ -978,10 +1130,10 @@ function rendermonthlyChart() {
             datasets: [{
                 label: "Monthly Expenses",
                 data: data,
-                backgroundColor: gradients.background,
-                borderColor: gradients.border,
-                borderWidth: 2,
-                borderRadius: 8,
+                backgroundColor: colors.background,
+                borderColor: colors.border,
+                borderWidth: 1,
+                borderRadius: 6,
                 borderSkipped: false,
                 barThickness: 'flex',
                 maxBarThickness: 60
@@ -992,32 +1144,25 @@ function rendermonthlyChart() {
 }
 
 /**
- * Creates gradient objects for chart styling
- * @param {CanvasRenderingContext2D} ctx - Canvas context
- * @returns {Object} Object containing background and border gradients
+ * Creates chart colors based on theme
+ * @returns {Object} Object containing background and border colors
  */
-function createChartGradients(ctx, chartHeight = 400) {
-    // Use dynamic height for gradient to match chart size
-    const backgroundGradient = ctx.createLinearGradient(0, 0, 0, chartHeight);
-    backgroundGradient.addColorStop(0, 'rgba(99, 102, 241, 0.8)');  // Indigo
-    backgroundGradient.addColorStop(0.5, 'rgba(139, 92, 246, 0.7)'); // Purple
-    backgroundGradient.addColorStop(1, 'rgba(168, 85, 247, 0.6)');  // Light purple
-    
-    const borderGradient = ctx.createLinearGradient(0, 0, 0, chartHeight);
-    borderGradient.addColorStop(0, 'rgba(99, 102, 241, 1)');
-    borderGradient.addColorStop(1, 'rgba(168, 85, 247, 1)');
+function createChartColors() {
+    const isDark = isDarkMode();
     
     return {
-        background: backgroundGradient,
-        border: borderGradient
+        background: isDark ? 'rgba(59, 130, 246, 0.7)' : 'rgba(37, 99, 235, 0.8)',
+        border: isDark ? '#3b82f6' : '#2563eb'
     };
 }
 
 /**
- * Gets chart configuration options
+ * Gets chart configuration options with dark mode support
  * @returns {Object} Chart.js options object
  */
 function getChartOptions() {
+    const isDark = isDarkMode();
+    
     return {
         responsive: true,
         maintainAspectRatio: false,
@@ -1030,34 +1175,34 @@ function getChartOptions() {
                 display: true,
                 position: 'top',
                 labels: {
-                    color: '#374151',
+                    color: isDark ? '#cbd5e0' : '#475569',
                     font: {
-                        family: "'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif",
-                        size: 14,
-                        weight: 'bold'
+                        family: "'Inter', sans-serif",
+                        size: 13,
+                        weight: '500'
                     },
-                    padding: 20,
+                    padding: 16,
                     usePointStyle: true,
                     pointStyle: 'circle'
                 }
             },
             tooltip: {
-                backgroundColor: 'rgba(17, 24, 39, 0.95)',
-                padding: 16,
+                backgroundColor: isDark ? 'rgba(30, 41, 59, 0.95)' : 'rgba(15, 23, 42, 0.95)',
+                padding: 12,
                 titleColor: '#fff',
                 bodyColor: '#fff',
-                borderColor: 'rgba(99, 102, 241, 0.5)',
-                borderWidth: 2,
-                cornerRadius: 12,
+                borderColor: isDark ? 'rgba(59, 130, 246, 0.5)' : 'rgba(37, 99, 235, 0.5)',
+                borderWidth: 1,
+                cornerRadius: 8,
                 displayColors: true,
                 titleFont: {
-                    family: "'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif",
-                    size: 16,
-                    weight: 'bold'
+                    family: "'Inter', sans-serif",
+                    size: 14,
+                    weight: '600'
                 },
                 bodyFont: {
-                    family: "'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif",
-                    size: 14
+                    family: "'Inter', sans-serif",
+                    size: 13
                 },
                 callbacks: {
                     label: function(context) {
@@ -1081,11 +1226,11 @@ function getChartOptions() {
                     drawBorder: false
                 },
                 ticks: {
-                    color: '#6B7280',
+                    color: isDark ? '#94a3b8' : '#64748b',
                     font: {
-                        family: "'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif",
+                        family: "'Inter', sans-serif",
                         size: 12,
-                        weight: '500'
+                        weight: '400'
                     },
                     padding: 12
                 }
@@ -1093,12 +1238,12 @@ function getChartOptions() {
             y: {
                 beginAtZero: true,
                 grid: {
-                    color: 'rgba(229, 231, 235, 0.5)',
+                    color: isDark ? 'rgba(51, 65, 85, 0.3)' : 'rgba(226, 232, 240, 0.5)',
                     lineWidth: 1,
                     drawBorder: false
                 },
                 ticks: {
-                    color: '#6B7280',
+                    color: isDark ? '#b0b0b0' : '#6B7280',
                     font: {
                         family: "'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif",
                         size: 12,

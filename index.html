@@ -13,82 +13,99 @@
         <div class="container">
             <div class="application">
                 <div class="card">
-                    <h1>Winner</h1>
+                    <div class="header-section">
+                        <h1>Winner</h1>
+                        <button id="darkModeToggle" class="dark-mode-toggle" type="button" aria-label="Toggle dark mode">
+                            <span class="toggle-icon">🌙</span>
+                        </button>
+                    </div>
                     <div class="main-content">EXPENSE TRACKER</div>
                     
-                    <!-- Dashboard -->
-                    <div id="dashboard">
-                        <div class="dashboard-card">
-                            <h3>THIS MONTH'S EXPENSES</h3>
-                            <p id="MonthlyTotal">Total: £0.00</p>
-                        </div>
-                        <div class="dashboard-card">
-                            <h3>Top category</h3>
-                            <p id="top-category">-</p>
-                        </div>
-                        <div class="dashboard-card">
-                            <h3>Average Expense</h3>
-                            <p id="average-expense">£0.00</p>
-                        </div>
+                    <!-- Navigation Tabs -->
+                    <div class="nav-tabs">
+                        <button class="nav-tab active" data-page="home" id="homeTab">
+                            <span>Add Expense</span>
+                        </button>
+                        <button class="nav-tab" data-page="history" id="historyTab">
+                            <span>History</span>
+                        </button>
                     </div>
-                    <h2>Add expense</h2>
-                    <p id="total">Total: £0.00</p>
-                    <form id="expense-form">
-                        <label>
-                            Amount:
-                            <input type="number" id="amount" placeholder="0.00" required>
-                        </label>
                     
-                        <label>
-                            Date:
-                            <input type="date" id="date">
-                        </label>
+                    <!-- Page 1: Home (Add Expense) -->
+                    <div class="page active" id="homePage">
+                        <!-- Dashboard -->
+                        <div id="dashboard">
+                            <div class="dashboard-card">
+                                <h3>THIS MONTH'S EXPENSES</h3>
+                                <p id="MonthlyTotal">Total: £0.00</p>
+                            </div>
+                            <div class="dashboard-card">
+                                <h3>Top category</h3>
+                                <p id="top-category">-</p>
+                            </div>
+                            <div class="dashboard-card">
+                                <h3>Average Expense</h3>
+                                <p id="average-expense">£0.00</p>
+                            </div>
+                        </div>
+                        
+                        <h2>Add expense</h2>
+                        <p id="total">Total: £0.00</p>
+                        <form id="expense-form">
+                            <label>
+                                Amount:
+                                <input type="number" id="amount" placeholder="0.00" required>
+                            </label>
+                        
+                            <label>
+                                Date:
+                                <input type="date" id="date">
+                            </label>
 
-                        <label>
-                            Notes:
-                            <input type="text" id="notes" placeholder="e.g. Groceries">
+                            <label>
+                                Notes:
+                                <input type="text" id="notes" placeholder="e.g. Groceries">
+                                <p id="emptyState" class="emptyState">
+                                    No expenses yet. Add your first one!
+                                </p>
+                            </label>
+                        
+                            <select id="category">
+                                <option value="">select category</option>
+                                <option value="Food">Food</option>
+                                <option value="transport">Transport</option>
+                                <option value="housing">housing</option>
+                                <option value="Bills">Bills</option>
+                                <option value="Other">Other</option>
+                            </select>
 
-
-                            <p id="emptyState" class="emptyState">
-                                No expenses yet. Add your first one!
-                            </p>
-                        </label>
-                    
-
-                        <select id="category">
-                            <option value="">select category</option>
-                            <option value="Food">Food</option>
-                            <option value="transport">Transport</option>
-                            <option value="housing">housing</option>
-                            <option value="Bills">Bills</option>
-                            <option value="Other">Other</option>
-                        </select>
-
-                        <button type="submit">Add expense</button>
-                    </form>
-                    
-                    <!-- edit button -->
-                    <button id="editBtn" class="edit-btn">
-                        Edit
-                    </button>
-                    
-                    <!-- Export CSV button -->
-                    <button id="exportbtn" class="export-btn" type="button">
-                        Export CSV
-                    </button>
-                    
-                    <!-- clear button -->
-                    <button id="clearAllBtn" class="danger">
-                        Clear all expenses
-                    </button>
-
-                    <!-- Chart Section -->
-                    <div class="chart-container">
-                        <h3>Monthly Expenses Chart</h3>
-                        <canvas id="MonthlyChart"></canvas>
+                            <button type="submit">Add expense</button>
+                        </form>
                     </div>
-
-                    <ul id="expense-list"></ul>
+                    
+                    <!-- Page 2: History (View All) -->
+                    <div class="page" id="historyPage">
+                        <h2>Expense History</h2>
+                        
+                        <!-- Chart Section -->
+                        <div class="chart-container">
+                            <h3>Monthly Expenses Chart</h3>
+                            <canvas id="MonthlyChart"></canvas>
+                        </div>
+                        
+                        <!-- Action Buttons -->
+                        <div class="action-buttons">
+                            <button id="exportbtn" class="export-btn" type="button">
+                                Export CSV
+                            </button>
+                            <button id="clearAllBtn" class="danger">
+                                Clear all expenses
+                            </button>
+                        </div>
+                        
+                        <!-- Expenses List -->
+                        <ul id="expense-list"></ul>
+                    </div>
                 </div>
             </div>
         </div>
