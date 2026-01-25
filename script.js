@@ -36,6 +36,9 @@ function initializeApp() {
     // Initialize dark mode (must be before other setup)
     initializeDarkMode(domElements.darkModeToggle);
     
+    // Check if onboarding is needed
+    checkAndShowOnboarding();
+    
     // Load saved expenses from localStorage
     loadExpensesFromStorage();
     
@@ -62,7 +65,10 @@ function getDOMElements() {
         homeTab: document.getElementById("homeTab"),
         historyTab: document.getElementById("historyTab"),
         homePage: document.getElementById("homePage"),
-        historyPage: document.getElementById("historyPage")
+        historyPage: document.getElementById("historyPage"),
+        onboardingModal: document.getElementById("onboardingModal"),
+        skipOnboardingBtn: document.getElementById("skipOnboarding"),
+        nextOnboardingBtn: document.getElementById("nextOnboarding")
     };
 }
 
@@ -70,11 +76,11 @@ function getDOMElements() {
  * Loads expenses from localStorage and initializes the UI
  */
 function loadExpensesFromStorage() {
-    const savedExpenses = localStorage.getItem("expenses");
-    
-    if (savedExpenses) {
+const savedExpenses = localStorage.getItem("expenses");
+
+if (savedExpenses) {
         try {
-            expenses = JSON.parse(savedExpenses);
+    expenses = JSON.parse(savedExpenses);
             refreshAllDisplays();
         } catch (error) {
             console.error("Error parsing saved expenses:", error);
@@ -107,6 +113,7 @@ function setupEventListeners(elements) {
     setupModalListeners();
     setupDarkModeListener(elements.darkModeToggle);
     setupNavigationListeners(elements);
+    setupOnboardingListeners(elements);
 }
 
 // ============================================================================
@@ -122,7 +129,7 @@ function setupFormListeners(elements) {
         console.error("Form element not found");
         return;
     }
-    
+
     // Form submission handler
     elements.form.addEventListener("submit", handleFormSubmit.bind(null, elements));
     
@@ -143,7 +150,7 @@ function handleFormSubmit(elements, event) {
         console.error("Form element not found");
         return;
     }
-    
+
     // Extract and validate form data
     const formData = extractFormData(elements);
     if (!validateFormData(formData)) {
@@ -300,29 +307,13 @@ function setupButtonListeners(elements) {
 // ============================================================================
 
 /**
- * Initializes dark mode based on saved preference or system preference
- * @param {HTMLElement} toggleButton - Dark mode toggle button element
+ * Initializes color scheme (dark mode disabled - using single color scheme)
+ * @param {HTMLElement} toggleButton - Dark mode toggle button element (unused)
  */
 function initializeDarkMode(toggleButton) {
-    if (!toggleButton) {
-        console.warn("Dark mode toggle button not found");
-        return;
-    }
-    
-    // Check for saved preference
-    const savedTheme = localStorage.getItem("theme");
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    
-    // Use saved preference, or default to system preference
-    const isDark = savedTheme === "dark" || (!savedTheme && prefersDark);
-    
-    if (isDark) {
-        document.documentElement.setAttribute("data-theme", "dark");
-        updateToggleIcon(toggleButton, true);
-    } else {
-        document.documentElement.setAttribute("data-theme", "light");
-        updateToggleIcon(toggleButton, false);
-    }
+    // Always use root color scheme (deep gray with gold accent)
+    // Remove any existing theme attribute to use default :root colors
+    document.documentElement.removeAttribute("data-theme");
 }
 
 /**
@@ -431,6 +422,122 @@ function switchPage(pageName, elements) {
     }
 }
 
+// ============================================================================
+// ONBOARDING FUNCTIONALITY
+// ============================================================================
+
+let currentOnboardingSlide = 1;
+const totalOnboardingSlides = 4;
+
+/**
+ * Checks if user has seen onboarding and shows it if needed
+ */
+function checkAndShowOnboarding() {
+    const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
+    if (!hasSeenOnboarding) {
+        setTimeout(() => {
+            showOnboarding();
+        }, 300);
+    }
+}
+
+/**
+ * Shows the onboarding modal
+ */
+function showOnboarding() {
+    const modal = document.getElementById("onboardingModal");
+    if (modal) {
+        modal.classList.add("show");
+        currentOnboardingSlide = 1;
+        updateOnboardingSlide(1);
+    }
+}
+
+/**
+ * Closes the onboarding modal
+ */
+function closeOnboarding() {
+    const modal = document.getElementById("onboardingModal");
+    if (modal) {
+        modal.classList.remove("show");
+        localStorage.setItem("hasSeenOnboarding", "true");
+    }
+}
+
+/**
+ * Updates the onboarding slide display
+ * @param {number} slideNumber - Slide number to show (1-4)
+ */
+function updateOnboardingSlide(slideNumber) {
+    // Update slides
+    document.querySelectorAll(".onboarding-slide").forEach((slide, index) => {
+        if (index + 1 === slideNumber) {
+            slide.classList.add("active");
+        } else {
+            slide.classList.remove("active");
+        }
+    });
+    
+    // Update dots
+    document.querySelectorAll(".onboarding-dots .dot").forEach((dot, index) => {
+        if (index + 1 === slideNumber) {
+            dot.classList.add("active");
+        } else {
+            dot.classList.remove("active");
+        }
+    });
+    
+    // Update next button text
+    const nextBtn = document.getElementById("nextOnboarding");
+    if (nextBtn) {
+        if (slideNumber === totalOnboardingSlides) {
+            nextBtn.textContent = "Get Started";
+        } else {
+            nextBtn.textContent = "Next";
+        }
+    }
+}
+
+/**
+ * Goes to the next onboarding slide
+ */
+function nextOnboardingSlide() {
+    if (currentOnboardingSlide < totalOnboardingSlides) {
+        currentOnboardingSlide++;
+        updateOnboardingSlide(currentOnboardingSlide);
+    } else {
+        closeOnboarding();
+    }
+}
+
+/**
+ * Sets up onboarding event listeners
+ * @param {Object} elements - DOM element references
+ */
+function setupOnboardingListeners(elements) {
+    if (!elements.skipOnboardingBtn || !elements.nextOnboardingBtn) {
+        return;
+    }
+    
+    // Skip button
+    elements.skipOnboardingBtn.addEventListener("click", () => {
+        closeOnboarding();
+    });
+    
+    // Next button
+    elements.nextOnboardingBtn.addEventListener("click", () => {
+        nextOnboardingSlide();
+    });
+    
+    // Dot navigation
+    document.querySelectorAll(".onboarding-dots .dot").forEach((dot, index) => {
+        dot.addEventListener("click", () => {
+            currentOnboardingSlide = index + 1;
+            updateOnboardingSlide(currentOnboardingSlide);
+        });
+    });
+}
+
 /**
  * Handles clearing all expenses with user confirmation
  */
@@ -523,11 +630,16 @@ function closeEditModal() {
  * @param {Event} event - Click event
  */
 function handleModalOutsideClick(event) {
-    const modal = document.getElementById("editModal");
-    if (!modal) return;
+    const editModal = document.getElementById("editModal");
+    const onboardingModal = document.getElementById("onboardingModal");
     
-    // Only close if modal is open and click is on the modal backdrop (not content)
-    if (modal.classList.contains("show") && event.target === modal) {
+    // Don't handle clicks if onboarding is showing
+    if (onboardingModal && onboardingModal.classList.contains("show")) {
+        return;
+    }
+    
+    // Only close edit modal if it's open and click is on the modal backdrop
+    if (editModal && editModal.classList.contains("show") && event.target === editModal) {
         closeEditModal();
     }
 }
@@ -633,25 +745,25 @@ function renderExpenses() {
     if (!expenseList) return;
     
     expenseList.innerHTML = "";
-    
+
     const emptyState = document.getElementById("emptyState");
     const totalAmount = document.getElementById("total");
-    
+
     if (!emptyState || !totalAmount) return;
     
     // Show empty state if no expenses
     if (expenses.length === 0) {
         emptyState.style.display = "block";
-        expenseList.innerHTML = "";
+            expenseList.innerHTML = "";
         totalAmount.textContent = "Total: £0.00";
-        return;
-    }
+            return;
+        } 
     
-    emptyState.style.display = "none";
-    
+            emptyState.style.display = "none";
+        
     // Group expenses by month and render
     const grouped = groupExpensesByMonth();
-    
+
     for (const month in grouped) {
         const monthContainer = createMonthContainer(month, grouped[month]);
         expenseList.appendChild(monthContainer);
@@ -665,20 +777,20 @@ function renderExpenses() {
  * @returns {HTMLElement} Month container element
  */
 function createMonthContainer(month, monthExpenses) {
-    const monthDiv = document.createElement("div");
-    monthDiv.classList.add("month");
-    
-    // Month header
-    const monthHeader = document.createElement("h3");
-    monthHeader.textContent = month;
-    monthDiv.appendChild(monthHeader);
-    
+        const monthDiv = document.createElement("div");
+        monthDiv.classList.add("month");
+
+        // Month header
+        const monthHeader = document.createElement("h3");
+        monthHeader.textContent = month;
+        monthDiv.appendChild(monthHeader);
+
     // Calculate and display month total
     const monthTotal = calculateMonthTotal(monthExpenses);
-    const monthTotalEl = document.createElement("p");
-    monthTotalEl.textContent = `Month Total: £${monthTotal.toFixed(2)}`;
-    monthDiv.appendChild(monthTotalEl);
-    
+        const monthTotalEl = document.createElement("p");
+        monthTotalEl.textContent = `Month Total: £${monthTotal.toFixed(2)}`;
+        monthDiv.appendChild(monthTotalEl);
+
     // Display category totals
     const categoryTotals = calculateCategoryTotals(monthExpenses);
     for (const category in categoryTotals) {
@@ -722,7 +834,7 @@ function calculateMonthTotal(monthExpenses) {
  * @returns {HTMLElement} List item element
  */
 function createExpenseListItem(expense, index, monthKey) {
-    const li = document.createElement("li");
+            const li = document.createElement("li");
     li.classList.add("expense-item");
     li.style.cursor = "pointer";
     
@@ -774,10 +886,10 @@ function createExpenseListItem(expense, index, monthKey) {
  * @returns {HTMLElement} Delete button element
  */
 function createDeleteButton(index, monthKey) {
-    const deleteBtn = document.createElement("button");
-    deleteBtn.textContent = "x";
-    deleteBtn.style.marginLeft = "8px";
-    
+            const deleteBtn = document.createElement("button");
+            deleteBtn.textContent = "x";
+            deleteBtn.style.marginLeft = "8px";
+
     deleteBtn.addEventListener("click", (e) => {
         e.stopPropagation(); // Prevent triggering the li click
         deleteExpense(index, monthKey);
@@ -876,7 +988,7 @@ function calculateCategoryTotals(expensesArray) {
     }
     
     const totals = {};
-    
+
     expensesArray.forEach(expense => {
         if (!expense || typeof expense !== 'object') {
             return; // Skip invalid expenses
@@ -886,14 +998,14 @@ function calculateCategoryTotals(expensesArray) {
         const amount = typeof expense.amount === 'number' && !isNaN(expense.amount) 
             ? expense.amount 
             : 0;
-        
+
         if (!totals[category]) {
             totals[category] = 0;
         }
-        
+
         totals[category] += amount;
     });
-    
+
     return totals;
 }
 
@@ -946,16 +1058,46 @@ function updateDashboard() {
         }
         return sum + e.amount;
     }, 0);
-    monthlyTotalEl.textContent = `Total: £${monthlyTotal.toFixed(2)}`;
+    animateValue(monthlyTotalEl, monthlyTotal, "£");
     
-    // Find top spending category
-    const topCategory = findTopCategory(monthlyExpenses);
-    topCategoryEl.textContent = topCategory;
+    // Find biggest spending category
+    const biggestCategory = findTopCategory(monthlyExpenses);
+    animateText(topCategoryEl, biggestCategory);
     
-    // Calculate and display average daily expense
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const averageExpense = daysInMonth > 0 ? monthlyTotal / daysInMonth : 0;
-    averageExpenseEl.textContent = `£${averageExpense.toFixed(2)}`;
+    // Calculate and display average daily spend (based on actual days with expenses)
+    const avgDailySpend = calculateAverageDailySpend(monthlyExpenses, now);
+    animateValue(averageExpenseEl, avgDailySpend, "£");
+}
+
+/**
+ * Calculates average daily spend based on days with expenses
+ * @param {Array} monthlyExpenses - Array of expenses for the month
+ * @param {Date} currentDate - Current date object
+ * @returns {number} Average daily spend
+ */
+function calculateAverageDailySpend(monthlyExpenses, currentDate) {
+    if (!Array.isArray(monthlyExpenses) || monthlyExpenses.length === 0) {
+        return 0;
+    }
+    
+    // Get unique days with expenses
+    const daysWithExpenses = new Set();
+    let totalSpent = 0;
+    
+    monthlyExpenses.forEach(exp => {
+        if (exp && exp.date && typeof exp.date === 'string') {
+            const expenseDate = new Date(exp.date);
+            if (!isNaN(expenseDate.getTime())) {
+                daysWithExpenses.add(expenseDate.toDateString());
+            }
+        }
+        if (exp && typeof exp.amount === 'number' && !isNaN(exp.amount)) {
+            totalSpent += exp.amount;
+        }
+    });
+    
+    const daysCount = daysWithExpenses.size;
+    return daysCount > 0 ? totalSpent / daysCount : 0;
 }
 
 /**
@@ -964,7 +1106,7 @@ function updateDashboard() {
  * @returns {string} Category name with highest spending, or "-" if none
  */
 function findTopCategory(monthlyExpenses) {
-    if (!Array.isArray(monthlyExpenses)) {
+    if (!Array.isArray(monthlyExpenses) || monthlyExpenses.length === 0) {
         return "-";
     }
     
@@ -991,6 +1133,65 @@ function findTopCategory(monthlyExpenses) {
     }
     
     return topCategory;
+}
+
+/**
+ * Animates a numeric value with counting effect
+ * @param {HTMLElement} element - Element to animate
+ * @param {number} targetValue - Target value to animate to
+ * @param {string} prefix - Prefix to add (e.g., "£")
+ */
+function animateValue(element, targetValue, prefix = "") {
+    if (!element) return;
+    
+    const startValue = parseFloat(element.textContent.replace(/[^0-9.-]/g, '')) || 0;
+    const duration = 800;
+    const startTime = performance.now();
+    
+    function update(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        // Easing function for smooth animation
+        const easeOutCubic = 1 - Math.pow(1 - progress, 3);
+        const currentValue = startValue + (targetValue - startValue) * easeOutCubic;
+        
+        element.textContent = `${prefix}${currentValue.toFixed(2)}`;
+        
+        if (progress < 1) {
+            requestAnimationFrame(update);
+        } else {
+            element.textContent = `${prefix}${targetValue.toFixed(2)}`;
+        }
+    }
+    
+    requestAnimationFrame(update);
+}
+
+/**
+ * Animates text change with fade effect
+ * @param {HTMLElement} element - Element to animate
+ * @param {string} newText - New text to display
+ */
+function animateText(element, newText) {
+    if (!element) return;
+    
+    // Only animate if text is changing
+    if (element.textContent === newText) return;
+    
+    // Add transition styles
+    element.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+    
+    // Fade out
+    element.style.opacity = "0";
+    element.style.transform = "translateY(-10px)";
+    
+    setTimeout(() => {
+        element.textContent = newText;
+        // Fade in
+        element.style.opacity = "1";
+        element.style.transform = "translateY(0)";
+    }, 150);
 }
 
 // ============================================================================
@@ -1148,11 +1349,9 @@ function rendermonthlyChart() {
  * @returns {Object} Object containing background and border colors
  */
 function createChartColors() {
-    const isDark = isDarkMode();
-    
     return {
-        background: isDark ? 'rgba(59, 130, 246, 0.7)' : 'rgba(37, 99, 235, 0.8)',
-        border: isDark ? '#3b82f6' : '#2563eb'
+        background: 'rgba(245, 192, 122, 0.7)',
+        border: '#f5c07a'
     };
 }
 
@@ -1175,7 +1374,7 @@ function getChartOptions() {
                 display: true,
                 position: 'top',
                 labels: {
-                    color: isDark ? '#cbd5e0' : '#475569',
+                    color: '#A6A6A6',
                     font: {
                         family: "'Inter', sans-serif",
                         size: 13,
@@ -1187,11 +1386,11 @@ function getChartOptions() {
                 }
             },
             tooltip: {
-                backgroundColor: isDark ? 'rgba(30, 41, 59, 0.95)' : 'rgba(15, 23, 42, 0.95)',
+                backgroundColor: 'rgba(27, 29, 35, 0.95)',
                 padding: 12,
                 titleColor: '#fff',
                 bodyColor: '#fff',
-                borderColor: isDark ? 'rgba(59, 130, 246, 0.5)' : 'rgba(37, 99, 235, 0.5)',
+                borderColor: 'rgba(245, 192, 122, 0.5)',
                 borderWidth: 1,
                 cornerRadius: 8,
                 displayColors: true,
@@ -1226,7 +1425,7 @@ function getChartOptions() {
                     drawBorder: false
                 },
                 ticks: {
-                    color: isDark ? '#94a3b8' : '#64748b',
+                    color: '#A6A6A6',
                     font: {
                         family: "'Inter', sans-serif",
                         size: 12,
@@ -1238,12 +1437,12 @@ function getChartOptions() {
             y: {
                 beginAtZero: true,
                 grid: {
-                    color: isDark ? 'rgba(51, 65, 85, 0.3)' : 'rgba(226, 232, 240, 0.5)',
+                    color: 'rgba(166, 166, 166, 0.2)',
                     lineWidth: 1,
                     drawBorder: false
                 },
                 ticks: {
-                    color: isDark ? '#b0b0b0' : '#6B7280',
+                    color: '#A6A6A6',
                     font: {
                         family: "'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif",
                         size: 12,

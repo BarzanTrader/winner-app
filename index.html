@@ -36,16 +36,16 @@
                         <!-- Dashboard -->
                         <div id="dashboard">
                             <div class="dashboard-card">
-                                <h3>THIS MONTH'S EXPENSES</h3>
-                                <p id="MonthlyTotal">Total: £0.00</p>
+                                <h3>Total This Month</h3>
+                                <p id="MonthlyTotal" class="dashboard-value">£0.00</p>
                             </div>
                             <div class="dashboard-card">
-                                <h3>Top category</h3>
-                                <p id="top-category">-</p>
+                                <h3>Biggest Category</h3>
+                                <p id="top-category" class="dashboard-value">-</p>
                             </div>
                             <div class="dashboard-card">
-                                <h3>Average Expense</h3>
-                                <p id="average-expense">£0.00</p>
+                                <h3>Avg Daily Spend</h3>
+                                <p id="average-expense" class="dashboard-value">£0.00</p>
                             </div>
                         </div>
                         
@@ -106,6 +106,42 @@
                         <!-- Expenses List -->
                         <ul id="expense-list"></ul>
                     </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Onboarding Modal -->
+        <div id="onboardingModal" class="modal onboarding-modal">
+            <div class="modal-content onboarding-content">
+                <div class="onboarding-slide active" data-slide="1">
+                    <div class="onboarding-icon">💰</div>
+                    <h2>Welcome to Winner</h2>
+                    <p>Track your expenses effortlessly and stay on top of your finances.</p>
+                </div>
+                <div class="onboarding-slide" data-slide="2">
+                    <div class="onboarding-icon">➕</div>
+                    <h2>Add Expenses Easily</h2>
+                    <p>Use the "Add Expense" tab to quickly record your spending with categories and notes.</p>
+                </div>
+                <div class="onboarding-slide" data-slide="3">
+                    <div class="onboarding-icon">📊</div>
+                    <h2>View Your History</h2>
+                    <p>Check the "History" tab to see all your expenses, charts, and export your data.</p>
+                </div>
+                <div class="onboarding-slide" data-slide="4">
+                    <div class="onboarding-icon">✨</div>
+                    <h2>You're All Set!</h2>
+                    <p>Start tracking your expenses and take control of your finances today.</p>
+                </div>
+                <div class="onboarding-navigation">
+                    <button class="onboarding-skip" id="skipOnboarding">Skip</button>
+                    <div class="onboarding-dots">
+                        <span class="dot active" data-dot="1"></span>
+                        <span class="dot" data-dot="2"></span>
+                        <span class="dot" data-dot="3"></span>
+                        <span class="dot" data-dot="4"></span>
+                    </div>
+                    <button class="onboarding-next" id="nextOnboarding">Next</button>
                 </div>
             </div>
         </div>
