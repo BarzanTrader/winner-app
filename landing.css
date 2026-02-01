@@ -1,0 +1,137 @@
+/* Valoro landing – simple, clean, premium */
+
+:root {
+    --landing-bg: #0f0f12;
+    --landing-surface: #18181c;
+    --landing-text: #e4e4e7;
+    --landing-muted: #71717a;
+    --landing-border: #27272a;
+    --landing-accent: #d4a853;
+    --landing-accent-hover: #c49b47;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    background: var(--landing-bg);
+    color: var(--landing-text);
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.landing {
+    width: 100%;
+    max-width: 420px;
+}
+
+.landing-inner {
+    text-align: center;
+}
+
+.landing-title {
+    margin: 0 0 8px;
+    font-size: clamp(2rem, 6vw, 2.75rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--landing-text);
+}
+
+.landing-tagline {
+    margin: 0 0 16px;
+    font-size: 1.125rem;
+    font-weight: 500;
+    color: var(--landing-accent);
+}
+
+.landing-subtitle {
+    margin: 0 0 40px;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+    color: var(--landing-muted);
+    max-width: 320px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.landing-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+}
+
+.landing-form input[type="email"] {
+    width: 100%;
+    padding: 14px 18px;
+    font-size: 1rem;
+    color: var(--landing-text);
+    background: var(--landing-surface);
+    border: 1px solid var(--landing-border);
+    border-radius: 10px;
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.landing-form input[type="email"]::placeholder {
+    color: var(--landing-muted);
+}
+
+.landing-form input[type="email"]:focus {
+    border-color: var(--landing-accent);
+    box-shadow: 0 0 0 3px rgba(212, 168, 83, 0.15);
+}
+
+.landing-form button[type="submit"] {
+    padding: 14px 24px;
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--landing-bg);
+    background: var(--landing-accent);
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, opacity 0.2s ease;
+}
+
+.landing-form button[type="submit"]:hover {
+    background: var(--landing-accent-hover);
+}
+
+.landing-form button[type="submit"]:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.landing-msg {
+    margin: 0;
+    font-size: 0.875rem;
+    min-height: 1.25em;
+}
+
+.landing-msg.success {
+    color: #22c55e;
+}
+
+.landing-msg.error {
+    color: #f87171;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}

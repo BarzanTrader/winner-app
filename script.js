@@ -9,6 +9,134 @@
  * - Local storage persistence
  * ============================================================================ */
 
+
+// Firebase Configuration
+const firebaseConfig = {
+    apiKey: "AIzaSyCetUZwLUa8bxN1tl9MqyryPlYeD-Y59fQ",
+    authDomain: "winner-app-1bd1c.firebaseapp.com",
+    projectId: "winner-app-1bd1c",
+    storageBucket: "winner-app-1bd1c.firebasestorage.app",
+    messagingSenderId: "989056268967",
+    appId: "1:989056268967:web:295ca8bfd1c885ae8cb982"
+};
+
+// Initialize Firebase (with error handling)
+let app = null;
+let db = null;
+
+// Initialize Firebase when DOM is ready
+async function initializeFirebase() {
+    try {
+        if (typeof firebase === 'undefined') {
+            console.warn("⚠️ Firebase SDK not loaded - app will work offline only");
+            console.warn("Make sure Firebase scripts are loaded before script.js");
+            return false;
+        }
+        
+        // Check if already initialized
+        try {
+            app = firebase.app();
+            console.log("Firebase app already initialized");
+        } catch (e) {
+            // Not initialized, create new app
+            app = firebase.initializeApp(firebaseConfig);
+            console.log("✅ Firebase app initialized");
+        }
+        
+        db = firebase.firestore();
+        console.log("✅ Firestore database initialized");
+        console.log("Database object:", db ? "Available" : "Not available");
+        console.log("db type:", typeof db);
+        console.log("db.collection:", typeof db.collection);
+        
+        // Verify db is working
+        if (db && typeof db.collection === 'function') {
+            console.log("✅ Firestore db object is valid and ready");
+        } else {
+            console.error("❌ Firestore db object is invalid!");
+            return false;
+        }
+        
+        // Enable offline persistence
+        try {
+            await db.enablePersistence();
+            console.log("✅ Firestore offline persistence enabled");
+        } catch (persistenceError) {
+            console.warn("⚠️ Could not enable offline persistence:", persistenceError);
+            // Continue anyway - app will still work
+        }
+        
+        // Test connection and wait for it
+        await testFirebaseConnection();
+        
+        // Create base collections on initialization (non-blocking)
+        createBaseCollections().catch(err => {
+            console.error("Failed to create base collections:", err);
+        });
+        
+        return true;
+    } catch (error) {
+        console.error("❌ Firebase initialization error:", error);
+        console.error("Error code:", error.code);
+        console.error("Error message:", error.message);
+        return false;
+    }
+}
+
+/**
+ * Tests Firebase connection
+ */
+async function testFirebaseConnection() {
+    if (!db) {
+        console.warn("⚠️ Cannot test connection - db not initialized");
+        return;
+    }
+    
+    try {
+        // Try a simple read operation
+        const testSnapshot = await db.collection("expenses").limit(1).get();
+        console.log("✅ Firebase connection test successful");
+        console.log("Can read from Firestore");
+    } catch (error) {
+        console.error("❌ Firebase connection test failed");
+        console.error("Error code:", error.code);
+        console.error("Error message:", error.message);
+        
+        if (error.code === 'permission-denied') {
+            console.error("⚠️ PERMISSION DENIED - Check Firestore security rules!");
+            console.error("Your Firestore rules may be blocking read/write operations.");
+        }
+    }
+}
+
+async function createBaseCollections() {
+    if (!db) {
+        console.warn("Firestore database not initialized");
+        return;
+    }
+    
+    const collections = ["users", "expenses", "hours", "income", "settings", "waitlist", "recurring_bills", "saving_goals", "work_sessions", "user_settings"];
+    
+    try {
+        for (const collectionName of collections) {
+            // Check if collection exists by trying to read it
+            const snapshot = await db.collection(collectionName).limit(1).get();
+            
+            // If collection is empty, add an initialization document
+            if (snapshot.empty) {
+                await db.collection(collectionName).add({
+                    init: true,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                console.log(`✅ Collection "${collectionName}" initialized`);
+            }
+        }
+        console.log("✅ All base collections ready");
+    } catch (error) {
+        console.error("Error creating base collections:", error);
+    }
+}
+
 // ============================================================================
 // GLOBAL VARIABLES
 // ============================================================================
@@ -16,15 +144,190 @@
 let expenses = [];              // Array storing all expense objects
 let selectedExpense = null;     // Currently selected expense for editing
 let monthlyChart = null;        // Chart.js instance for monthly chart
+let categoryChart = null;       // Chart.js instance for category chart
+let selectedMonthFilter = "current"; // 'current', 'all', or specific 'YYYY-MM'
+
+// Hourly tracker: current session and live timer
+let hourlySessionDocId = null;
+let hourlySessionStartTime = null;
+let hourlyTimerIntervalId = null;
+let currentHourlyRate = 0;
+/** When set, user clicked Stop work and we're waiting for break duration before saving */
+let hourlySessionPausedAt = null;
 
 // ============================================================================
 // INITIALIZATION - DOM Content Loaded
 // ============================================================================
 
-document.addEventListener("DOMContentLoaded", function() {
+document.addEventListener("DOMContentLoaded", async function() {
+    // Wait a bit for Firebase SDK to load if needed
+    let attempts = 0;
+    while (typeof firebase === 'undefined' && attempts < 10) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+    }
+    
+    // Initialize Firebase first and wait for it to be ready
+    const firebaseReady = await initializeFirebase();
+    
+    if (!firebaseReady) {
+        console.warn("⚠️ Firebase not initialized - app will work in offline mode");
+    } else {
+        console.log("✅ Firebase fully initialized and ready");
+        // Verify db is accessible globally
+        console.log("Global db variable:", db);
+        console.log("Global app variable:", app);
+    }
+    
+    // Then initialize the app
     initializeApp();
+    loadSummary().catch(function(err) { console.warn("loadSummary on init:", err); });
+    loadRecurringBills().catch(function(err) { console.warn("loadRecurringBills on init:", err); });
+    loadSavingGoals().catch(function(err) { console.warn("loadSavingGoals on init:", err); });
+    loadUserSettingsHourlyRate().then(function() { return loadWorkSessions(); }).catch(function(err) { console.warn("Hourly tracker on init:", err); });
+    setTimeout(function() {
+        loadExpensesFromStorage().catch(function(err) { console.warn("Delayed load expenses:", err); });
+        loadSummary().catch(function(err) { console.warn("Delayed loadSummary:", err); });
+        loadRecurringBills().catch(function(err) { console.warn("Delayed loadRecurringBills:", err); });
+        loadSavingGoals().catch(function(err) { console.warn("Delayed loadSavingGoals:", err); });
+        loadUserSettingsHourlyRate().then(function() { return loadWorkSessions(); }).catch(function(err) { console.warn("Delayed hourly tracker:", err); });
+    }, 2000);
+    document.addEventListener("visibilitychange", function() {
+        if (document.visibilityState === "visible" && db && typeof db.collection === "function") {
+            loadExpensesFromStorage().catch(function(err) { console.warn("Visibility refresh load:", err); });
+            loadSummary().catch(function(err) { console.warn("Visibility loadSummary:", err); });
+            loadRecurringBills().catch(function(err) { console.warn("Visibility loadRecurringBills:", err); });
+            loadSavingGoals().catch(function(err) { console.warn("Visibility loadSavingGoals:", err); });
+        }
+    });
+    
+    // Add global diagnostic function for debugging
+    window.checkFirebaseStatus = function() {
+        console.log("=== Firebase Status Check ===");
+        console.log("Firebase SDK loaded:", typeof firebase !== 'undefined');
+        console.log("App initialized:", app !== null);
+        console.log("DB initialized:", db !== null);
+        console.log("DB type:", typeof db);
+        console.log("DB.collection exists:", db && typeof db.collection === 'function');
+        console.log("Firebase config:", firebaseConfig);
+        return {
+            sdkLoaded: typeof firebase !== 'undefined',
+            appInitialized: app !== null,
+            dbInitialized: db !== null,
+            dbValid: db && typeof db.collection === 'function'
+        };
+    };
+    
+    // Add test function to manually test Firestore write
+    window.testFirestoreWrite = async function() {
+        console.log("=== Testing Firestore Write ===");
+        try {
+            if (!db) {
+                console.error("❌ DB not initialized");
+                return false;
+            }
+            
+            const testData = {
+                amount: 1.00,
+                category: "Test",
+                note: "Test expense",
+                date: new Date().toISOString().split('T')[0],
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            };
+            
+            console.log("📤 Attempting to write test data:", testData);
+            const docRef = await db.collection("expenses").add(testData);
+            console.log("✅ Test write successful!");
+            console.log("📄 Document ID:", docRef.id);
+            
+            // Try to read it back
+            const doc = await docRef.get();
+            console.log("✅ Test read successful!");
+            console.log("📄 Document data:", doc.data());
+            
+            return true;
+        } catch (error) {
+            console.error("❌ Test write failed!");
+            console.error("Error code:", error.code);
+            console.error("Error message:", error.message);
+            console.error("Full error:", error);
+            
+            if (error.code === 'permission-denied') {
+                console.error("⚠️ PERMISSION DENIED!");
+                console.error("Your Firestore security rules are blocking writes.");
+                console.error("Go to Firebase Console > Firestore Database > Rules");
+                console.error("Update rules to allow writes. Example rule:");
+                console.error("match /expenses/{document=**} {");
+                console.error("  allow read, write: if true;");
+                console.error("}");
+            }
+            
+            return false;
+        }
+    };
+    
+    // Add function to verify expenses in Firestore
+    window.verifyFirestoreExpenses = async function() {
+        console.log("=== Verifying Expenses in Firestore ===");
+        try {
+            if (!db) {
+                console.error("❌ DB not initialized");
+                return;
+            }
+            
+            const snapshot = await db.collection("expenses").get();
+            console.log(`✅ Found ${snapshot.size} documents in Firestore`);
+            
+            const expenses = [];
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                if (!data.init) { // Skip init documents
+                    expenses.push({
+                        id: doc.id,
+                        ...data
+                    });
+                }
+            });
+            
+            console.log(`✅ Found ${expenses.length} actual expenses (excluding init docs)`);
+            console.table(expenses);
+            
+            // Compare with local storage
+            const localExpenses = JSON.parse(localStorage.getItem("expenses") || "[]");
+            console.log(`📦 Local storage has ${localExpenses.length} expenses`);
+            
+            if (expenses.length !== localExpenses.length) {
+                console.warn("⚠️ Mismatch between Firestore and local storage!");
+                console.log("Firestore IDs:", expenses.map(e => e.id));
+                console.log("Local storage IDs:", localExpenses.map(e => e.id || "NO ID"));
+            } else {
+                console.log("✅ Firestore and local storage match!");
+            }
+            
+            return expenses;
+        } catch (error) {
+            console.error("❌ Error verifying expenses:", error);
+            return null;
+        }
+    };
+    
+    console.log("💡 Tip: Run checkFirebaseStatus() to check Firebase status");
+    console.log("💡 Tip: Run testFirestoreWrite() to test writing to Firestore");
+    console.log("💡 Tip: Run verifyFirestoreExpenses() to see all expenses in Firestore");
 });
 
+
+async function joinWaitlist(email) {
+    if (!db || typeof db.collection !== 'function') {
+        throw new Error("Firestore not available");
+    }
+    await db.collection("waitlist").add({
+        email,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        source: "app"
+    });
+    console.log("✅ Waitlist entry added to Firestore");
+}
 /**
  * Initializes the application by setting up DOM references, loading data,
  * and attaching event listeners
@@ -33,17 +336,19 @@ function initializeApp() {
     // Get DOM element references
     const domElements = getDOMElements();
     
-    // Initialize dark mode (must be before other setup)
-    initializeDarkMode(domElements.darkModeToggle);
-    
     // Check if onboarding is needed
     checkAndShowOnboarding();
     
-    // Load saved expenses from localStorage
-    loadExpensesFromStorage();
+    // Load saved expenses from Firestore (with localStorage fallback)
+    loadExpensesFromStorage().catch(err => {
+        console.error("Failed to load expenses:", err);
+    });
     
     // Set up event listeners
     setupEventListeners(domElements);
+    
+    // Set up waitlist form
+    setupWaitlistListener();
 }
 
 /**
@@ -58,29 +363,186 @@ function getDOMElements() {
         notesInput: document.getElementById("notes"),
         expenseList: document.getElementById("expense-list"),
         categoryInput: document.getElementById("category"),
+        monthlyTotalCard: document.getElementById("monthlyTotalCard"),
+        biggestCategoryCard: document.getElementById("biggestCategoryCard"),
+        avgExpenseCard: document.getElementById("avgExpenseCard"),
+        toggleMonthlyChartBtn: document.getElementById("toggleMonthlyChartBtn"),
+        toggleCategoryChartBtn: document.getElementById("toggleCategoryChartBtn"),
+        toggleExpenseListBtn: document.getElementById("toggleExpenseListBtn"),
+        monthlyChartSection: document.getElementById("monthlyChartSection"),
+        categoryChartSection: document.getElementById("categoryChartSection"),
+        expenseSearchInput: document.getElementById("expenseSearch"),
         clearAllBtn: document.getElementById("clearAllBtn"),
         editBtn: document.getElementById("editBtn"),
         exportBtn: document.getElementById("exportbtn"),
-        darkModeToggle: document.getElementById("darkModeToggle"),
         homeTab: document.getElementById("homeTab"),
         historyTab: document.getElementById("historyTab"),
+        hourlyTab: document.getElementById("hourlyTab"),
         homePage: document.getElementById("homePage"),
         historyPage: document.getElementById("historyPage"),
+        hourlyPage: document.getElementById("hourlyPage"),
+        monthFilter: document.getElementById("monthFilter"),
         onboardingModal: document.getElementById("onboardingModal"),
         skipOnboardingBtn: document.getElementById("skipOnboarding"),
-        nextOnboardingBtn: document.getElementById("nextOnboarding")
+        nextOnboardingBtn: document.getElementById("nextOnboarding"),
+        waitlistForm: document.getElementById("waitlistForm"),
+        waitlistEmail: document.getElementById("waitlistEmail"),
+        waitlistMsg: document.getElementById("waitlistMsg"),
+        startWorkBtn: document.getElementById("startWorkBtn"),
+        stopWorkBtn: document.getElementById("stopWorkBtn"),
+        startWorkMsg: document.getElementById("startWorkMsg"),
+        hourlyTimerDisplay: document.getElementById("hourlyTimerDisplay")
     };
 }
 
 /**
- * Loads expenses from localStorage and initializes the UI
+ * Sets up waitlist form functionality
  */
-function loadExpensesFromStorage() {
-const savedExpenses = localStorage.getItem("expenses");
-
-if (savedExpenses) {
+function setupWaitlistListener() {
+    const waitlistForm = document.getElementById("waitlistForm");
+    const waitlistEmail = document.getElementById("waitlistEmail");
+    const waitlistMsg = document.getElementById("waitlistMsg");
+    
+    if (!waitlistForm || !waitlistEmail || !waitlistMsg) return;
+    
+    waitlistForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        
+        const email = waitlistEmail.value.trim();
+        if (!email) return;
+        
+        const list = JSON.parse(localStorage.getItem("waitlist")) || [];
+        if (list.includes(email)) {
+            waitlistMsg.textContent = "You are already on the waitlist!";
+            waitlistMsg.style.display = "block";
+            return;
+        }
+        
         try {
-    expenses = JSON.parse(savedExpenses);
+            if (db && typeof db.collection === 'function') {
+                await joinWaitlist(email);
+            }
+            list.push(email);
+            localStorage.setItem("waitlist", JSON.stringify(list));
+            waitlistMsg.textContent = "Thank you for joining the waitlist!";
+            waitlistMsg.style.display = "block";
+            waitlistEmail.value = "";
+        } catch (error) {
+            console.error("Waitlist error:", error);
+            waitlistMsg.textContent = "Something went wrong. Please try again.";
+            waitlistMsg.style.display = "block";
+        }
+    });
+}
+
+/**
+ * Sets up the month filter dropdown on the history page
+ * @param {HTMLSelectElement} monthFilter
+ */
+function setupMonthFilterListener(monthFilter) {
+    if (!monthFilter) return;
+
+    monthFilter.addEventListener("change", () => {
+        const value = monthFilter.value;
+        selectedMonthFilter = value || "current";
+        console.log("Selected month filter:", selectedMonthFilter);
+
+        // Refresh views that depend on month
+        calculateAndDisplayTotals();
+        renderExpenses();
+        renderCategoryChart();
+        updateDashboard();
+    });
+}
+
+/**
+ * Sets up live filtering of the expense list by a search query
+ * @param {HTMLInputElement} searchInput
+ */
+function setupExpenseSearchListener(searchInput) {
+    if (!searchInput) return;
+
+    searchInput.addEventListener("input", () => {
+        const query = searchInput.value.trim().toLowerCase();
+        const expenseList = document.getElementById("expense-list");
+        if (!expenseList) return;
+
+        const monthContainers = expenseList.querySelectorAll(".month");
+
+        monthContainers.forEach(monthDiv => {
+            const items = monthDiv.querySelectorAll(".expense-item");
+            let anyVisible = false;
+
+            items.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                const match = !query || text.includes(query);
+                item.style.display = match ? "" : "none";
+                if (match) anyVisible = true;
+            });
+
+            // Hide entire month section if no visible items
+            monthDiv.style.display = anyVisible ? "" : "none";
+        });
+    });
+}
+
+/**
+ * Loads expenses from Firestore (with localStorage fallback) and initializes the UI
+ */
+function parseExpenseDate(value) {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    if (value && typeof value.toDate === "function") {
+        try { return value.toDate().toISOString().slice(0, 10); } catch (e) { return ""; }
+    }
+    return String(value);
+}
+
+async function loadExpensesFromStorage() {
+    // Try to load from Firestore first
+    if (db && typeof db.collection === "function") {
+        try {
+            const snapshot = await db.collection("expenses").get();
+            expenses = [];
+            
+            snapshot.forEach(function(doc) {
+                const data = doc.data();
+                if (data && data.init === true) return;
+                var note = (data && (data.note != null ? data.note : data.notes)) || "";
+                var amount = Number(data && data.amount);
+                if (isNaN(amount)) amount = 0;
+                var date = parseExpenseDate(data && data.date);
+                var category = (data && data.category) || "";
+                expenses.push({
+                    id: doc.id,
+                    note: String(note),
+                    amount: amount,
+                    date: date,
+                    category: String(category)
+                });
+            });
+            
+            localStorage.setItem("expenses", JSON.stringify(expenses));
+            console.log("Loaded " + expenses.length + " expenses from Firestore");
+            calculateAndDisplayTotals();
+            populateMonthFilterOptions();
+            refreshAllDisplays();
+            return;
+        } catch (error) {
+            console.error("Error loading expenses from Firestore:", error);
+        }
+    }
+    
+    // Fallback to localStorage
+    const savedExpenses = localStorage.getItem("expenses");
+    
+    if (savedExpenses) {
+        try {
+            expenses = JSON.parse(savedExpenses);
+            
+            // Calculate and display totals
+            calculateAndDisplayTotals();
+            populateMonthFilterOptions();
             refreshAllDisplays();
         } catch (error) {
             console.error("Error parsing saved expenses:", error);
@@ -89,7 +551,119 @@ if (savedExpenses) {
         }
     } else {
         // Initialize dashboard even if no expenses exist
+        calculateAndDisplayTotals();
         updateDashboard();
+    }
+}
+
+/**
+ * Populates the month filter dropdown based on available expenses
+ */
+function populateMonthFilterOptions() {
+    const monthFilter = document.getElementById("monthFilter");
+    if (!monthFilter) return;
+
+    // Collect unique YYYY-MM month keys
+    const monthSet = new Set();
+    expenses.forEach(exp => {
+        if (!exp || !exp.date || typeof exp.date !== 'string') return;
+        const key = exp.date.slice(0, 7);
+        if (key.length === 7) {
+            monthSet.add(key);
+        }
+    });
+
+    const months = Array.from(monthSet).sort();
+
+    // Preserve current selection if possible
+    const previousValue = monthFilter.value;
+
+    // Rebuild options
+    monthFilter.innerHTML = "";
+
+    const currentOption = document.createElement("option");
+    currentOption.value = "current";
+    currentOption.textContent = "This month";
+    monthFilter.appendChild(currentOption);
+
+    const allOption = document.createElement("option");
+    allOption.value = "all";
+    allOption.textContent = "All months";
+    monthFilter.appendChild(allOption);
+
+    months.forEach(monthKey => {
+        const opt = document.createElement("option");
+        opt.value = monthKey;
+        opt.textContent = formatMonthLabelFromRaw(monthKey);
+        monthFilter.appendChild(opt);
+    });
+
+    // Restore previous selection if still valid, otherwise default to "current"
+    if (previousValue && Array.from(monthFilter.options).some(o => o.value === previousValue)) {
+        monthFilter.value = previousValue;
+        selectedMonthFilter = previousValue;
+    } else {
+        monthFilter.value = "current";
+        selectedMonthFilter = "current";
+    }
+}
+
+/**
+ * Calculates and displays monthly total and category summary
+ */
+function calculateAndDisplayTotals() {
+    const activeMonthKey = getActiveMonthKeyFromFilter();
+    
+    // Filter expenses for active month (or all if no month selected)
+    const monthlyExpenses = expenses.filter(exp => {
+        if (!exp || !exp.date || typeof exp.date !== 'string') return false;
+        if (!activeMonthKey) return true; // "all months" selected
+        return exp.date.slice(0, 7) === activeMonthKey;
+    });
+    
+    // Calculate monthly total
+    const monthlyTotal = monthlyExpenses.reduce((sum, e) => {
+        if (!e || typeof e.amount !== 'number' || isNaN(e.amount)) {
+            return sum;
+        }
+        return sum + e.amount;
+    }, 0);
+    
+    // Update monthly total display (dashboard)
+    const monthlyTotalEl = document.getElementById("MonthlyTotal");
+    if (monthlyTotalEl) {
+        monthlyTotalEl.textContent = `£${monthlyTotal.toFixed(2)}`;
+    }
+    
+    // Update monthly total display (history page)
+    const historyMonthlyTotalEl = document.getElementById("historyMonthlyTotal");
+    if (historyMonthlyTotalEl) {
+        historyMonthlyTotalEl.textContent = `£${monthlyTotal.toFixed(2)}`;
+    }
+    
+    // Calculate category totals
+    const categoryTotals = calculateCategoryTotals(monthlyExpenses);
+    
+    // Update category summary display
+    const categorySummaryEl = document.getElementById("categorySummary");
+    if (categorySummaryEl) {
+        categorySummaryEl.innerHTML = ""; // Clear existing content
+        
+        if (Object.keys(categoryTotals).length === 0) {
+            const li = document.createElement("li");
+            li.textContent = "No expenses this month";
+            categorySummaryEl.appendChild(li);
+        } else {
+            // Sort categories by amount (descending)
+            const sortedCategories = Object.entries(categoryTotals)
+                .sort((a, b) => b[1] - a[1]);
+            
+            sortedCategories.forEach(([category, total]) => {
+                const li = document.createElement("li");
+                li.textContent = `${category}: £${total.toFixed(2)}`;
+                categorySummaryEl.appendChild(li);
+            });
+        }
     }
 }
 
@@ -99,6 +673,7 @@ if (savedExpenses) {
 function refreshAllDisplays() {
     renderExpenses();
     calculateTotal();
+    calculateAndDisplayTotals(); // Update monthly total and category summary
     renderChart();
     updateDashboard();
 }
@@ -111,9 +686,11 @@ function setupEventListeners(elements) {
     setupFormListeners(elements);
     setupButtonListeners(elements);
     setupModalListeners();
-    setupDarkModeListener(elements.darkModeToggle);
     setupNavigationListeners(elements);
     setupOnboardingListeners(elements);
+    setupMonthFilterListener(elements.monthFilter);
+    setupExpenseSearchListener(elements.expenseSearchInput);
+    setupHourlyTrackerListener(elements);
 }
 
 // ============================================================================
@@ -142,8 +719,9 @@ function setupFormListeners(elements) {
  * @param {Object} elements - DOM element references
  * @param {Event} event - Form submit event
  */
-function handleFormSubmit(elements, event) {
+async function handleFormSubmit(elements, event) {
     event.preventDefault();
+    console.log("📋 Form submitted");
     
     // Validate form elements exist
     if (!elements.form) {
@@ -152,18 +730,35 @@ function handleFormSubmit(elements, event) {
     }
 
     // Extract and validate form data
+    console.log("📝 Extracting form data...");
     const formData = extractFormData(elements);
+    console.log("📝 Extracted form data:", formData);
+    
     if (!validateFormData(formData)) {
+        console.warn("⚠️ Form validation failed");
         return;
     }
+    console.log("✅ Form data validated");
     
     // Create expense object and save
     const expense = createExpenseObject(formData);
-    addExpense(expense);
+    console.log("📦 Created expense object:", expense);
+    console.log("🚀 Calling addExpense...");
+    
+    try {
+        await addExpense(expense);
+        console.log("✅ addExpense completed");
+    } catch (error) {
+        console.error("❌ Error in handleFormSubmit when calling addExpense:", error);
+        console.error("Error stack:", error.stack);
+        throw error; // Re-throw to be caught by outer try-catch if any
+    }
     
     // Reset form and refresh displays
     elements.form.reset();
+    console.log("✅ Form reset");
     refreshAllDisplays();
+    console.log("✅ UI refreshed after adding expense");
 }
 
 /**
@@ -235,12 +830,180 @@ function createExpenseObject(formData) {
 }
 
 /**
- * Adds a new expense to the array and saves to localStorage
+ * Ensures Firebase is initialized and ready
+ * @returns {Promise<boolean>} True if Firebase is ready, false otherwise
+ */
+async function ensureFirebaseReady() {
+    // Check if db is already valid
+    if (db && typeof db.collection === 'function') {
+        console.log("✅ Firebase already ready");
+        return true;
+    }
+    
+    // Try to re-initialize if Firebase SDK is available
+    if (typeof firebase === 'undefined') {
+        console.warn("⚠️ Firebase SDK not loaded in ensureFirebaseReady");
+        return false;
+    }
+    
+    try {
+        // Check if app exists, if not create it
+        if (!app) {
+            try {
+                app = firebase.app();
+                console.log("✅ Firebase app already exists");
+            } catch (e) {
+                // App doesn't exist, create it
+                app = firebase.initializeApp(firebaseConfig);
+                console.log("✅ Firebase app created in ensureFirebaseReady");
+            }
+        }
+        
+        // Get Firestore instance
+        db = firebase.firestore();
+        
+        // Verify db is valid
+        if (!db || typeof db.collection !== 'function') {
+            console.error("❌ Firestore db object is invalid after re-initialization");
+            return false;
+        }
+        
+        // Test with a simple operation
+        try {
+            await db.collection("expenses").limit(1).get();
+            console.log("✅ Firestore re-initialized and tested successfully");
+        } catch (testError) {
+            console.warn("⚠️ Firestore re-initialized but test failed:", testError);
+            // Still return true if db object exists, test might fail due to permissions
+            if (db && typeof db.collection === 'function') {
+                console.log("⚠️ Continuing despite test failure - db object is valid");
+                return true;
+            }
+            return false;
+        }
+        
+        return true;
+    } catch (error) {
+        console.error("❌ Failed to re-initialize Firestore:", error);
+        console.error("Error code:", error.code);
+        console.error("Error message:", error.message);
+        return false;
+    }
+}
+
+/**
+ * Adds a new expense to the array, saves to localStorage, and Firestore
  * @param {Object} expense - Expense object to add
  */
-function addExpense(expense) {
-    expenses.push(expense);
-    localStorage.setItem("expenses", JSON.stringify(expenses));
+async function addExpense(expense) {
+    try {
+        // Validate expense object
+        if (!expense || typeof expense !== 'object') {
+            throw new Error("Invalid expense object");
+        }
+        
+        // Ensure date is set
+        if (!expense.date) {
+            expense.date = new Date().toISOString().split('T')[0];
+        }
+        
+        console.log("📝 Adding expense:", expense);
+        
+        // Ensure Firebase is ready (await the async function)
+        const firebaseReady = await ensureFirebaseReady();
+        console.log("Database status:", firebaseReady ? "✅ Available" : "❌ Not available");
+        console.log("db variable:", db);
+        console.log("db type:", typeof db);
+        
+        // Add to local array first
+        expenses.push(expense);
+        
+        // Save to localStorage as backup
+        localStorage.setItem("expenses", JSON.stringify(expenses));
+        console.log("✅ Expense saved to localStorage");
+        
+        // Save to Firestore
+        if (firebaseReady && db) {
+            try {
+                console.log("🔄 Attempting to save to Firestore...");
+                console.log("firebaseReady:", firebaseReady);
+                console.log("db exists:", !!db);
+                console.log("Firestore data:", {
+                    amount: expense.amount,
+                    category: expense.category,
+                    note: expense.note,
+                    date: expense.date
+                });
+                console.log("db object:", db);
+                console.log("db object type:", typeof db);
+                console.log("db.collection exists:", typeof db.collection === 'function');
+                console.log("firebase.firestore exists:", typeof firebase !== 'undefined' && typeof firebase.firestore !== 'undefined');
+                console.log("FieldValue exists:", typeof firebase !== 'undefined' && typeof firebase.firestore !== 'undefined' && typeof firebase.firestore.FieldValue !== 'undefined');
+                
+                if (!db || typeof db.collection !== 'function') {
+                    throw new Error("Firestore db object is not valid");
+                }
+                
+                // Prepare data for Firestore
+                const firestoreData = {
+                    amount: expense.amount,
+                    category: expense.category,
+                    note: expense.note,
+                    date: expense.date,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                
+                console.log("📤 Sending to Firestore:", firestoreData);
+                console.log("Collection path: expenses");
+                
+                const docRef = await db.collection("expenses").add(firestoreData);
+                
+                console.log("✅ Firestore add() completed");
+                console.log("📄 Document reference:", docRef);
+                console.log("📄 Document ID:", docRef.id);
+                
+                // Store Firestore document ID with the expense
+                expense.id = docRef.id;
+                // Update localStorage with the ID
+                localStorage.setItem("expenses", JSON.stringify(expenses));
+                console.log("✅ Expense added to Firestore successfully!");
+                console.log("✅ Expense ID stored:", expense.id);
+                console.log("✅ Updated expenses array length:", expenses.length);
+            } catch (error) {
+                console.error("❌ ERROR adding expense to Firestore");
+                console.error("Error code:", error.code);
+                console.error("Error message:", error.message);
+                console.error("Full error object:", error);
+                
+                if (error.code === 'permission-denied') {
+                    console.error("⚠️ PERMISSION DENIED!");
+                    console.error("Your Firestore security rules are blocking writes.");
+                    console.error("Go to Firebase Console > Firestore Database > Rules");
+                    console.error("Update rules to allow writes. Example rule:");
+                    console.error("match /expenses/{document=**} {");
+                    console.error("  allow read, write: if true;");
+                    console.error("}");
+                } else if (error.code === 'unavailable') {
+                    console.error("⚠️ Firestore is unavailable");
+                    console.error("Check your internet connection");
+                } else if (error.code === 'failed-precondition') {
+                    console.error("⚠️ Firestore precondition failed");
+                    console.error("Database may be in read-only mode");
+                }
+                
+                console.log("⚠️ Expense saved to localStorage only (not synced to Firestore)");
+            }
+        } else {
+            console.warn("⚠️ Firestore database not available");
+            console.warn("db variable:", db);
+            console.warn("Firebase app:", app);
+            console.warn("Firebase SDK:", typeof firebase !== 'undefined' ? "Loaded" : "Not loaded");
+            console.log("Expense saved to localStorage only");
+        }
+    } catch (error) {
+        console.error("❌ Error in addExpense function:", error);
+        throw error;
+    }
 }
 
 /**
@@ -254,16 +1017,20 @@ function setupFormValidation(elements) {
     
     const submitBtn = elements.form.querySelector('button[type="submit"]');
     
-    if (submitBtn && elements.amountInput && elements.dateInput && elements.notesInput) {
+    if (submitBtn && elements.amountInput && elements.notesInput && elements.categoryInput) {
         elements.form.addEventListener("input", () => {
+            // Date is optional, so only check required fields
             const isValid = elements.amountInput.value && 
-                          elements.dateInput.value && 
-                          elements.notesInput.value.trim();
+                          elements.notesInput.value.trim() &&
+                          elements.categoryInput.value;
             submitBtn.disabled = !isValid;
         });
         
-        // Initialize button state
-        submitBtn.disabled = true;
+        // Initialize button state - check if form has valid initial values
+        const hasInitialValues = elements.amountInput.value && 
+                                elements.notesInput.value.trim() &&
+                                elements.categoryInput.value;
+        submitBtn.disabled = !hasInitialValues;
     }
 }
 
@@ -300,80 +1067,159 @@ function setupButtonListeners(elements) {
     } else {
         console.error("Export button not found! Check HTML for id='exportbtn'");
     }
-}
 
-// ============================================================================
-// DARK MODE FUNCTIONALITY
-// ============================================================================
+    // Dashboard "Total This Month" card → open history charts for the current month
+    if (elements.monthlyTotalCard) {
+        elements.monthlyTotalCard.style.cursor = "pointer";
+        elements.monthlyTotalCard.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
 
-/**
- * Initializes color scheme (dark mode disabled - using single color scheme)
- * @param {HTMLElement} toggleButton - Dark mode toggle button element (unused)
- */
-function initializeDarkMode(toggleButton) {
-    // Always use root color scheme (deep gray with gold accent)
-    // Remove any existing theme attribute to use default :root colors
-    document.documentElement.removeAttribute("data-theme");
-}
+            // Focus on current month in filter
+            selectedMonthFilter = "current";
+            const monthFilter = document.getElementById("monthFilter");
+            if (monthFilter) {
+                monthFilter.value = "current";
+            }
 
-/**
- * Sets up the dark mode toggle button event listener
- * @param {HTMLElement} toggleButton - Dark mode toggle button element
- */
-function setupDarkModeListener(toggleButton) {
-    if (!toggleButton) {
-        return;
+            // Switch to history tab
+            switchPage("history", elements);
+
+            // Refresh views (totals, list, charts) for current month
+            refreshAllDisplays();
+
+            // Ensure monthly chart section is visible
+            if (elements.monthlyChartSection) {
+                elements.monthlyChartSection.classList.add("chart-visible");
+            }
+            if (elements.toggleMonthlyChartBtn) {
+                elements.toggleMonthlyChartBtn.textContent = "Hide monthly chart";
+            }
+
+            // Smooth scroll to the history section
+            const historyPage = elements.historyPage || document.getElementById("historyPage");
+            if (historyPage && typeof historyPage.scrollIntoView === "function") {
+                historyPage.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+        });
     }
-    
-    toggleButton.addEventListener("click", () => {
-        toggleDarkMode(toggleButton);
-    });
+
+    // Dashboard "Biggest Category" card → go to history & focus category chart for current month
+    if (elements.biggestCategoryCard) {
+        elements.biggestCategoryCard.style.cursor = "pointer";
+        elements.biggestCategoryCard.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Focus on current month in filter
+            selectedMonthFilter = "current";
+            const monthFilter = document.getElementById("monthFilter");
+            if (monthFilter) {
+                monthFilter.value = "current";
+            }
+
+            // Switch to history tab
+            switchPage("history", elements);
+
+            // Refresh for current month
+            refreshAllDisplays();
+
+            // Scroll to category chart
+            const categoryChartContainer = document.querySelector('.chart-container canvas#ExpensesChart')?.parentElement;
+            if (categoryChartContainer && typeof categoryChartContainer.scrollIntoView === "function") {
+                categoryChartContainer.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+
+            // Ensure category chart section is visible
+            if (elements.categoryChartSection) {
+                elements.categoryChartSection.classList.add("chart-visible");
+            }
+            if (elements.toggleCategoryChartBtn) {
+                elements.toggleCategoryChartBtn.textContent = "Hide category chart";
+            }
+        });
+    }
+
+    // Dashboard "Avg Daily Spend" card → go to history & focus expense list for current month
+    if (elements.avgExpenseCard) {
+        elements.avgExpenseCard.style.cursor = "pointer";
+        elements.avgExpenseCard.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Focus on current month in filter
+            selectedMonthFilter = "current";
+            const monthFilter = document.getElementById("monthFilter");
+            if (monthFilter) {
+                monthFilter.value = "current";
+            }
+
+            // Switch to history tab
+            switchPage("history", elements);
+
+            // Refresh for current month
+            refreshAllDisplays();
+
+            // Scroll to expense list
+            const expenseList = elements.expenseList || document.getElementById("expense-list");
+            if (expenseList && typeof expenseList.scrollIntoView === "function") {
+                expenseList.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+
+            // Ensure expense list is visible
+            if (expenseList) {
+                expenseList.classList.add("expense-list-visible");
+            }
+            if (elements.toggleExpenseListBtn) {
+                elements.toggleExpenseListBtn.textContent = "Hide expenses";
+            }
+        });
+    }
+
+    // History toggles: show/hide charts to declutter the page
+    if (elements.toggleMonthlyChartBtn && elements.monthlyChartSection) {
+        elements.toggleMonthlyChartBtn.addEventListener("click", () => {
+            const willShow = !elements.monthlyChartSection.classList.contains("chart-visible");
+            elements.monthlyChartSection.classList.toggle("chart-visible", willShow);
+            elements.toggleMonthlyChartBtn.textContent = willShow ? "Hide monthly chart" : "Show monthly chart";
+            if (willShow) {
+                // Render after section is visible so canvas has dimensions
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        rendermonthlyChart();
+                    });
+                });
+            }
+        });
+    }
+
+    if (elements.toggleCategoryChartBtn && elements.categoryChartSection) {
+        elements.toggleCategoryChartBtn.addEventListener("click", () => {
+            const willShow = !elements.categoryChartSection.classList.contains("chart-visible");
+            elements.categoryChartSection.classList.toggle("chart-visible", willShow);
+            elements.toggleCategoryChartBtn.textContent = willShow ? "Hide category chart" : "Show category chart";
+            if (willShow) {
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        renderCategoryChart();
+                    });
+                });
+            }
+        });
+    }
+
+    // Expense list toggle (dropdown-style)
+    if (elements.toggleExpenseListBtn && elements.expenseList) {
+        elements.toggleExpenseListBtn.addEventListener("click", () => {
+            const list = elements.expenseList;
+            const willShow = !list.classList.contains("expense-list-visible");
+            list.classList.toggle("expense-list-visible", willShow);
+            elements.toggleExpenseListBtn.textContent = willShow ? "Hide expenses" : "Show expenses";
+        });
+    }
 }
 
-/**
- * Toggles dark mode on/off
- * @param {HTMLElement} toggleButton - Dark mode toggle button element
- */
-function toggleDarkMode(toggleButton) {
-    const currentTheme = document.documentElement.getAttribute("data-theme");
-    const isDark = currentTheme === "dark";
-    
-    // Toggle theme
-    if (isDark) {
-        document.documentElement.setAttribute("data-theme", "light");
-        localStorage.setItem("theme", "light");
-        updateToggleIcon(toggleButton, false);
-    } else {
-        document.documentElement.setAttribute("data-theme", "dark");
-        localStorage.setItem("theme", "dark");
-        updateToggleIcon(toggleButton, true);
-    }
-    
-    // Re-render chart with new theme colors
-    if (monthlyChart) {
-        renderChart();
-    }
-}
 
-/**
- * Updates the dark mode toggle button icon
- * @param {HTMLElement} toggleButton - Dark mode toggle button element
- * @param {boolean} isDark - Whether dark mode is active
- */
-function updateToggleIcon(toggleButton, isDark) {
-    const icon = toggleButton.querySelector(".toggle-icon");
-    if (icon) {
-        icon.textContent = isDark ? "☀️" : "🌙";
-    }
-}
-
-/**
- * Checks if dark mode is currently active
- * @returns {boolean} True if dark mode is active
- */
-function isDarkMode() {
-    return document.documentElement.getAttribute("data-theme") === "dark";
-}
 
 // ============================================================================
 // NAVIGATION FUNCTIONALITY
@@ -386,16 +1232,445 @@ function isDarkMode() {
 function setupNavigationListeners(elements) {
     if (!elements.homeTab || !elements.historyTab || !elements.homePage || !elements.historyPage) {
         console.warn("Navigation elements not found");
+        console.warn("homeTab:", elements.homeTab);
+        console.warn("historyTab:", elements.historyTab);
+        console.warn("homePage:", elements.homePage);
+        console.warn("historyPage:", elements.historyPage);
         return;
     }
     
-    elements.homeTab.addEventListener("click", () => {
-        switchPage("home", elements);
+    // Add click listeners with event handling
+    // Use both direct listeners and data-page attribute as fallback
+    const handleTabClick = (e, pageName) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log(`${pageName} tab clicked`);
+        switchPage(pageName, elements);
+    };
+    
+    elements.homeTab.addEventListener("click", (e) => handleTabClick(e, "home"));
+    elements.historyTab.addEventListener("click", (e) => handleTabClick(e, "history"));
+    
+    // Also listen to data-page attribute clicks as fallback
+    const navTabs = document.querySelectorAll('.nav-tab[data-page]');
+    navTabs.forEach(tab => {
+        const pageName = tab.getAttribute('data-page');
+        if (pageName && !tab.hasAttribute('data-listener-added')) {
+            tab.setAttribute('data-listener-added', 'true');
+            tab.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log(`Tab with data-page="${pageName}" clicked`);
+                switchPage(pageName, elements);
+            });
+        }
     });
     
-    elements.historyTab.addEventListener("click", () => {
-        switchPage("history", elements);
+    console.log("✅ Navigation listeners set up");
+    console.log("Home tab element:", elements.homeTab);
+    console.log("History tab element:", elements.historyTab);
+}
+
+function formatElapsedHMS(seconds) {
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = Math.floor(seconds % 60);
+    var pad = function(n) { return n < 10 ? "0" + n : String(n); };
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
+}
+
+function formatMinutesAsHoursMinutes(totalMinutes) {
+    if (totalMinutes == null || isNaN(totalMinutes)) return "—";
+    var h = Math.floor(totalMinutes / 60);
+    var m = Math.round(totalMinutes % 60);
+    if (h > 0 && m > 0) return h + "h " + m + "m";
+    if (h > 0) return h + "h";
+    return m + "m";
+}
+
+function formatSessionDate(timestamp) {
+    if (!timestamp) return "—";
+    try {
+        var date = timestamp && typeof timestamp.toDate === "function" ? timestamp.toDate() : new Date(timestamp);
+        if (isNaN(date.getTime())) return "—";
+        return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    } catch (e) {
+        return "—";
+    }
+}
+
+var USER_SETTINGS_HOURLY_DOC_ID = "hourly";
+
+async function loadUserSettingsHourlyRate() {
+    var inputEl = document.getElementById("hourlyRateInput");
+    if (!inputEl) return;
+    if (!db || typeof db.collection !== "function") return;
+    try {
+        var doc = await db.collection("user_settings").doc(USER_SETTINGS_HOURLY_DOC_ID).get();
+        var rate = 0;
+        if (doc.exists && doc.data()) {
+            rate = Number(doc.data().hourlyRate);
+            if (isNaN(rate)) rate = 0;
+        }
+        currentHourlyRate = rate;
+        inputEl.value = rate > 0 ? rate.toFixed(2) : "";
+    } catch (err) {
+        console.warn("loadUserSettingsHourlyRate error:", err);
+    }
+}
+
+async function saveUserSettingsHourlyRate() {
+    var inputEl = document.getElementById("hourlyRateInput");
+    var msgEl = document.getElementById("hourlyRateMsg");
+    if (!inputEl || !db || typeof db.collection !== "function") return;
+    var rate = parseFloat(inputEl.value);
+    if (isNaN(rate) || rate < 0) rate = 0;
+    try {
+        await db.collection("user_settings").doc(USER_SETTINGS_HOURLY_DOC_ID).set({ hourlyRate: rate }, { merge: true });
+        currentHourlyRate = rate;
+        if (msgEl) {
+            msgEl.textContent = "Saved.";
+            msgEl.className = "hourly-msg success";
+        }
+    } catch (err) {
+        console.warn("saveUserSettingsHourlyRate error:", err);
+        if (msgEl) {
+            msgEl.textContent = "Could not save.";
+            msgEl.className = "hourly-msg error";
+        }
+    }
+}
+
+async function loadWorkSessions() {
+    var listEl = document.getElementById("workSessionsList");
+    if (!listEl) return;
+    var sessions = [];
+    if (db && typeof db.collection === "function") {
+        try {
+            var snapshot = await db.collection("work_sessions").get();
+            snapshot.forEach(function(doc) {
+                var data = doc.data();
+                if (data && data.init === true) return;
+                var startTime = data && data.startTime;
+                var totalMinutes = data && data.totalMinutes;
+                var breakMinutes = 0;
+                if (data && data.breakMinutes != null && !isNaN(Number(data.breakMinutes))) {
+                    breakMinutes = Number(data.breakMinutes);
+                } else if (data && data.breaks && Array.isArray(data.breaks)) {
+                    data.breaks.forEach(function(b) {
+                        var startMs = b.startMs != null ? b.startMs : (b.start && b.start.toMillis ? b.start.toMillis() : 0);
+                        var endMs = b.endMs != null ? b.endMs : (b.end && b.end.toMillis ? b.end.toMillis() : 0);
+                        breakMinutes += (endMs - startMs) / 60000;
+                    });
+                }
+                var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : (data.endTime && data.endTime.toDate ? data.endTime.toDate().getTime() : 0);
+                var dateLabel = formatSessionDate(startTime || data.endTime);
+                var durationLabel = formatMinutesAsHoursMinutes(totalMinutes);
+                var breakLabel = breakMinutes <= 0 ? "0 min" : (breakMinutes >= 60 ? formatMinutesAsHoursMinutes(breakMinutes) : Math.round(breakMinutes) + " min");
+                var earning = data && (data.earning != null) ? Number(data.earning) : null;
+                if (earning != null && isNaN(earning)) earning = null;
+                var mins = totalMinutes != null && !isNaN(Number(totalMinutes)) ? Number(totalMinutes) : 0;
+                sessions.push({ id: doc.id, dateLabel: dateLabel, durationLabel: durationLabel, breakLabel: breakLabel, earning: earning, sortKey: ts, totalMinutes: mins });
+            });
+            sessions.sort(function(a, b) {
+                return (b.sortKey || 0) - (a.sortKey || 0);
+            });
+        } catch (err) {
+            console.warn("loadWorkSessions error:", err);
+        }
+    }
+    var now = new Date();
+    var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    var todayEnd = todayStart + 24 * 60 * 60 * 1000 - 1;
+    var todayTotal = 0;
+    sessions.forEach(function(s) {
+        if (s.sortKey >= todayStart && s.sortKey <= todayEnd && s.earning != null) {
+            todayTotal += s.earning;
+        }
     });
+    var todayEl = document.getElementById("todayEarningDisplay");
+    if (todayEl) todayEl.textContent = "Today: £" + todayTotal.toFixed(2);
+    var weekStartDate = new Date(now);
+    weekStartDate.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+    weekStartDate.setHours(0, 0, 0, 0);
+    var weekEndDate = new Date(weekStartDate);
+    weekEndDate.setDate(weekStartDate.getDate() + 6);
+    weekEndDate.setHours(23, 59, 59, 999);
+    var weekStart = weekStartDate.getTime();
+    var weekEnd = weekEndDate.getTime();
+    var weekTotal = 0;
+    sessions.forEach(function(s) {
+        if (s.sortKey >= weekStart && s.sortKey <= weekEnd && s.earning != null) {
+            weekTotal += s.earning;
+        }
+    });
+    var weekEl = document.getElementById("weekEarningDisplay");
+    if (weekEl) weekEl.textContent = "This week: £" + weekTotal.toFixed(2);
+    var rate = (typeof currentHourlyRate === "number" && !isNaN(currentHourlyRate)) ? currentHourlyRate : 0;
+    var hoursToday = 0;
+    sessions.forEach(function(s) {
+        if (s.sortKey >= todayStart && s.sortKey <= todayEnd && s.totalMinutes != null) {
+            hoursToday += s.totalMinutes / 60;
+        }
+    });
+    var effectiveRate = (hoursToday > 0 && todayTotal > 0) ? todayTotal / hoursToday : rate;
+    var totalHoursAll = 0;
+    var minTs = null;
+    var maxTs = null;
+    sessions.forEach(function(s) {
+        if (s.totalMinutes != null) totalHoursAll += s.totalMinutes / 60;
+        if (s.sortKey != null) {
+            if (minTs == null || s.sortKey < minTs) minTs = s.sortKey;
+            if (maxTs == null || s.sortKey > maxTs) maxTs = s.sortKey;
+        }
+    });
+    var todayStartMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    var rangeEnd = maxTs != null && maxTs > todayStartMs ? maxTs : todayStartMs;
+    var rangeStart = minTs != null ? minTs : todayStartMs;
+    var calendarDays = Math.max(1, Math.round((rangeEnd - rangeStart) / (24 * 60 * 60 * 1000)) + 1);
+    var avgHoursPerDay = calendarDays > 0 ? totalHoursAll / calendarDays : 0;
+    var dayProj = Math.round(avgHoursPerDay * effectiveRate * 100) / 100;
+    var weekProj = Math.round(7 * avgHoursPerDay * effectiveRate * 100) / 100;
+    var daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    var monthProj = Math.round(daysInMonth * avgHoursPerDay * effectiveRate * 100) / 100;
+    var pacingEl = document.getElementById("pacingDisplay");
+    if (pacingEl) {
+        pacingEl.textContent = "If you keep this pace: £" + dayProj.toFixed(2) + " today, £" + weekProj.toFixed(2) + " week, £" + monthProj.toFixed(2) + " month";
+    }
+    listEl.innerHTML = "";
+    sessions.forEach(function(s) {
+        var li = document.createElement("li");
+        li.className = "work-session-item";
+        li.setAttribute("role", "button");
+        li.tabIndex = 0;
+        var earningStr = s.earning != null ? "£" + s.earning.toFixed(2) : "—";
+        var breakLabel = s.breakLabel != null ? s.breakLabel : "0 min";
+        var textSpan = document.createElement("span");
+        textSpan.className = "work-session-item-text";
+        textSpan.textContent = s.dateLabel + " — Break: " + breakLabel + " — Hours worked: " + s.durationLabel + " — " + earningStr;
+        li.appendChild(textSpan);
+        var delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "work-session-delete-btn";
+        delBtn.textContent = "Delete";
+        delBtn.setAttribute("aria-label", "Delete session");
+        delBtn.dataset.sessionId = s.id || "";
+        delBtn.addEventListener("click", function(ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            var id = delBtn.dataset.sessionId;
+            if (id) deleteWorkSession(id);
+        });
+        li.appendChild(delBtn);
+        li.addEventListener("click", function(ev) {
+            if (ev.target === delBtn) return;
+            var items = listEl.querySelectorAll(".work-session-item");
+            items.forEach(function(item) { item.classList.remove("selected"); });
+            li.classList.add("selected");
+        });
+        listEl.appendChild(li);
+    });
+}
+
+async function deleteWorkSession(sessionId) {
+    if (!sessionId || !db || typeof db.collection !== "function") return;
+    try {
+        await db.collection("work_sessions").doc(sessionId).delete();
+        loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions after delete:", e); });
+    } catch (err) {
+        console.error("Delete work session error:", err);
+    }
+}
+
+/**
+ * Sets up Hourly Tracker: Start/Stop work and live timer
+ * @param {Object} elements - DOM element references
+ */
+function updateWorkButtonState(btn) {
+    if (!btn) return;
+    if (hourlySessionDocId != null) {
+        btn.textContent = "Stop work";
+        btn.classList.add("start-work-btn-stop");
+    } else {
+        btn.textContent = "Start work";
+        btn.classList.remove("start-work-btn-stop");
+    }
+}
+
+function setupHourlyTrackerListener(elements) {
+    var startBtn = elements && elements.startWorkBtn;
+    var msgEl = elements && elements.startWorkMsg;
+    var timerEl = elements && elements.hourlyTimerDisplay;
+    var breakEntryWrap = document.getElementById("breakEntryWrap");
+    var breakDurationInput = document.getElementById("breakDurationInput");
+    var breakUnitSelect = document.getElementById("breakUnitSelect");
+    var confirmSessionBtn = document.getElementById("confirmSessionBtn");
+    var cancelBreakEntryBtn = document.getElementById("cancelBreakEntryBtn");
+    if (!startBtn) return;
+
+    var saveRateBtn = document.getElementById("saveHourlyRateBtn");
+    if (saveRateBtn) {
+        saveRateBtn.addEventListener("click", function() {
+            var msgEl2 = document.getElementById("hourlyRateMsg");
+            if (msgEl2) { msgEl2.textContent = ""; msgEl2.className = "hourly-msg"; }
+            saveUserSettingsHourlyRate().then(function() {
+                if (msgEl2) setTimeout(function() { msgEl2.textContent = ""; }, 2000);
+            });
+        });
+    }
+
+    function stopTimer() {
+        if (hourlyTimerIntervalId != null) {
+            clearInterval(hourlyTimerIntervalId);
+            hourlyTimerIntervalId = null;
+        }
+        hourlySessionDocId = null;
+        hourlySessionStartTime = null;
+        hourlySessionPausedAt = null;
+        if (timerEl) timerEl.textContent = "00:00:00";
+        updateWorkButtonState(startBtn);
+        if (breakEntryWrap) breakEntryWrap.style.display = "none";
+        var actionsWrap = startBtn && startBtn.closest(".hourly-tracker-actions");
+        if (actionsWrap) actionsWrap.style.display = "";
+    }
+
+    function showBreakEntry() {
+        hourlySessionPausedAt = Date.now();
+        if (hourlyTimerIntervalId != null) {
+            clearInterval(hourlyTimerIntervalId);
+            hourlyTimerIntervalId = null;
+        }
+        if (timerEl && hourlySessionStartTime != null) {
+            var elapsedSec = (hourlySessionPausedAt - hourlySessionStartTime) / 1000;
+            timerEl.textContent = formatElapsedHMS(elapsedSec);
+        }
+        if (breakDurationInput) { breakDurationInput.value = "0"; breakDurationInput.min = "0"; }
+        if (breakUnitSelect) breakUnitSelect.value = "minutes";
+        if (breakEntryWrap) breakEntryWrap.style.display = "block";
+        var actionsWrap = startBtn && startBtn.closest(".hourly-tracker-actions");
+        if (actionsWrap) actionsWrap.style.display = "none";
+    }
+
+    function hideBreakEntryAndResume() {
+        if (breakEntryWrap) breakEntryWrap.style.display = "none";
+        var actionsWrap = startBtn && startBtn.closest(".hourly-tracker-actions");
+        if (actionsWrap) actionsWrap.style.display = "";
+        hourlySessionPausedAt = null;
+        var elapsedSoFar = hourlySessionStartTime != null && hourlySessionPausedAt != null
+            ? (hourlySessionPausedAt - hourlySessionStartTime) : 0;
+        hourlySessionStartTime = Date.now() - elapsedSoFar;
+        if (timerEl) timerEl.textContent = formatElapsedHMS(elapsedSoFar / 1000);
+        if (hourlyTimerIntervalId != null) clearInterval(hourlyTimerIntervalId);
+        hourlyTimerIntervalId = setInterval(function() {
+            if (hourlySessionStartTime == null || !timerEl) return;
+            var elapsed = (Date.now() - hourlySessionStartTime) / 1000;
+            timerEl.textContent = formatElapsedHMS(elapsed);
+        }, 1000);
+    }
+
+    startBtn.addEventListener("click", async function() {
+        if (msgEl) {
+            msgEl.textContent = "";
+            msgEl.className = "hourly-msg";
+        }
+        if (hourlySessionPausedAt != null) return;
+        if (hourlySessionDocId != null) {
+            showBreakEntry();
+            return;
+        }
+        if (!db || typeof db.collection !== "function") {
+            if (msgEl) {
+                msgEl.textContent = "Firebase not ready. Try again.";
+                msgEl.className = "hourly-msg error";
+            }
+            return;
+        }
+        try {
+            startBtn.disabled = true;
+            var docRef = await db.collection("work_sessions").add({
+                startTime: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            hourlySessionDocId = docRef.id;
+            hourlySessionStartTime = Date.now();
+            hourlySessionPausedAt = null;
+            updateWorkButtonState(startBtn);
+            if (breakEntryWrap) breakEntryWrap.style.display = "none";
+            if (timerEl) timerEl.textContent = "00:00:00";
+            if (hourlyTimerIntervalId != null) clearInterval(hourlyTimerIntervalId);
+            hourlyTimerIntervalId = setInterval(function() {
+                if (hourlySessionStartTime == null || hourlySessionPausedAt != null || !timerEl) return;
+                var elapsed = (Date.now() - hourlySessionStartTime) / 1000;
+                timerEl.textContent = formatElapsedHMS(elapsed);
+            }, 1000);
+            if (msgEl) {
+                msgEl.textContent = "Work session started.";
+                msgEl.className = "hourly-msg success";
+            }
+        } catch (err) {
+            console.error("Start work error:", err);
+            if (msgEl) {
+                msgEl.textContent = "Could not start session. Try again.";
+                msgEl.className = "hourly-msg error";
+            }
+        } finally {
+            startBtn.disabled = false;
+        }
+    });
+
+    if (confirmSessionBtn) {
+        confirmSessionBtn.addEventListener("click", async function() {
+            if (hourlySessionDocId == null || hourlySessionPausedAt == null) return;
+            var raw = breakDurationInput ? parseFloat(breakDurationInput.value) : 0;
+            if (isNaN(raw)) raw = 0;
+            var unit = breakUnitSelect ? breakUnitSelect.value : "minutes";
+            var breakMinutes = unit === "hours" ? raw * 60 : raw;
+            breakMinutes = Math.max(0, breakMinutes);
+            var elapsedMs = hourlySessionPausedAt - hourlySessionStartTime;
+            var workedMs = Math.max(0, elapsedMs - breakMinutes * 60000);
+            var totalMinutes = Math.round(workedMs / 60000 * 100) / 100;
+            var hourlyRate = currentHourlyRate != null && !isNaN(currentHourlyRate) ? currentHourlyRate : 0;
+            var earning = Math.round((totalMinutes / 60) * hourlyRate * 100) / 100;
+            if (msgEl) { msgEl.textContent = ""; msgEl.className = "hourly-msg"; }
+            if (db && typeof db.collection === "function") {
+                try {
+                    confirmSessionBtn.disabled = true;
+                    await db.collection("work_sessions").doc(hourlySessionDocId).update({
+                        endTime: firebase.firestore.FieldValue.serverTimestamp(),
+                        totalMinutes: totalMinutes,
+                        hourlyRate: hourlyRate,
+                        earning: earning,
+                        breakMinutes: breakMinutes
+                    });
+                    if (msgEl) {
+                        msgEl.textContent = "You earned: £" + earning.toFixed(2) + " for this session.";
+                        msgEl.className = "hourly-msg success";
+                    }
+                    loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions after stop:", e); });
+                } catch (err) {
+                    console.error("Save session error:", err);
+                    if (msgEl) {
+                        msgEl.textContent = "Could not save session. Try again.";
+                        msgEl.className = "hourly-msg error";
+                    }
+                } finally {
+                    confirmSessionBtn.disabled = false;
+                }
+            } else {
+                if (msgEl) {
+                    msgEl.textContent = "Session ended (not saved – Firebase not ready).";
+                    msgEl.className = "hourly-msg error";
+                }
+            }
+            stopTimer();
+        });
+    }
+
+    if (cancelBreakEntryBtn) {
+        cancelBreakEntryBtn.addEventListener("click", function() {
+            if (hourlySessionPausedAt == null) return;
+            hideBreakEntryAndResume();
+        });
+    }
 }
 
 /**
@@ -404,21 +1679,44 @@ function setupNavigationListeners(elements) {
  * @param {Object} elements - DOM element references
  */
 function switchPage(pageName, elements) {
+    console.log("Switching to page:", pageName);
+    
     // Remove active class from all tabs and pages
-    elements.homeTab.classList.remove("active");
-    elements.historyTab.classList.remove("active");
-    elements.homePage.classList.remove("active");
-    elements.historyPage.classList.remove("active");
+    if (elements.homeTab) elements.homeTab.classList.remove("active");
+    if (elements.historyTab) elements.historyTab.classList.remove("active");
+    if (elements.hourlyTab) elements.hourlyTab.classList.remove("active");
+    if (elements.homePage) elements.homePage.classList.remove("active");
+    if (elements.historyPage) elements.historyPage.classList.remove("active");
+    if (elements.hourlyPage) elements.hourlyPage.classList.remove("active");
     
     // Add active class to selected tab and page
     if (pageName === "home") {
-        elements.homeTab.classList.add("active");
-        elements.homePage.classList.add("active");
+        if (elements.homeTab) elements.homeTab.classList.add("active");
+        if (elements.homePage) elements.homePage.classList.add("active");
+        console.log("✅ Switched to home page");
     } else if (pageName === "history") {
-        elements.historyTab.classList.add("active");
-        elements.historyPage.classList.add("active");
-        // Render chart when switching to history page
-        renderChart();
+        if (elements.historyTab) elements.historyTab.classList.add("active");
+        if (elements.historyPage) elements.historyPage.classList.add("active");
+        console.log("✅ Switched to history page");
+        // Re-render charts after page is visible so canvas has correct dimensions
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                renderChart();
+                // Resize existing Chart.js instances if they exist
+                if (monthlyChart) {
+                    try { monthlyChart.resize(); } catch (e) { /* ignore */ }
+                }
+                if (categoryChart) {
+                    try { categoryChart.resize(); } catch (e) { /* ignore */ }
+                }
+            });
+        });
+    } else if (pageName === "hourly") {
+        if (elements.hourlyTab) elements.hourlyTab.classList.add("active");
+        if (elements.hourlyPage) elements.hourlyPage.classList.add("active");
+        console.log("✅ Switched to Hourly Tracker page");
+        loadUserSettingsHourlyRate().catch(function(e) { console.warn("loadUserSettingsHourlyRate on switch:", e); });
+        loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions on switch:", e); });
     }
 }
 
@@ -541,11 +1839,34 @@ function setupOnboardingListeners(elements) {
 /**
  * Handles clearing all expenses with user confirmation
  */
-function handleClearAllExpenses() {
+async function handleClearAllExpenses() {
     if (expenses.length === 0) return;
     
     const confirmed = window.confirm("Are you sure you want to clear all expenses?");
     if (!confirmed) return;
+    
+    // Delete all expenses from Firestore
+    const firebaseReady = await ensureFirebaseReady();
+    if (firebaseReady && db) {
+        try {
+            const batch = db.batch();
+            const expensesToDelete = expenses.filter(exp => exp.id);
+            
+            if (expensesToDelete.length > 0) {
+                expensesToDelete.forEach(exp => {
+                    const docRef = db.collection("expenses").doc(exp.id);
+                    batch.delete(docRef);
+                });
+                
+                await batch.commit();
+                console.log(`✅ Deleted ${expensesToDelete.length} expenses from Firestore`);
+            }
+        } catch (error) {
+            console.error("❌ Error clearing expenses from Firestore:", error);
+            console.error("Error code:", error.code);
+            console.error("Error message:", error.message);
+        }
+    }
     
     expenses = [];
     localStorage.removeItem("expenses");
@@ -647,7 +1968,7 @@ function handleModalOutsideClick(event) {
 /**
  * Handles saving an edited expense
  */
-function handleSaveEditedExpense() {
+async function handleSaveEditedExpense() {
     // Get edit form elements
     const amountInput = document.getElementById("edit-amount");
     const dateInput = document.getElementById("edit-date");
@@ -689,15 +2010,38 @@ function handleSaveEditedExpense() {
         return;
     }
     
-    // Save updated expense
-    expenses[expenseIndex] = {
+    // Save updated expense (preserve Firestore ID)
+    const updatedExpense = {
+        id: selectedExpense.id, // Preserve Firestore ID
         note: editData.note,
         amount: editData.amount,
         date: editData.date,
         category: editData.category
     };
     
+    expenses[expenseIndex] = updatedExpense;
     localStorage.setItem("expenses", JSON.stringify(expenses));
+    
+    // Update expense in Firestore if it has an ID
+    if (updatedExpense.id) {
+        const firebaseReady = await ensureFirebaseReady();
+        if (firebaseReady && db) {
+            try {
+                await db.collection("expenses").doc(updatedExpense.id).update({
+                    amount: editData.amount,
+                    category: editData.category,
+                    note: editData.note,
+                    date: editData.date
+                });
+                console.log("✅ Expense updated in Firestore");
+            } catch (error) {
+                console.error("❌ Error updating expense in Firestore:", error);
+                console.error("Error code:", error.code);
+                console.error("Error message:", error.message);
+            }
+        }
+    }
+    
     selectedExpense = null;
     
     refreshAllDisplays();
@@ -764,7 +2108,16 @@ function renderExpenses() {
     // Group expenses by month and render
     const grouped = groupExpensesByMonth();
 
+    const activeMonthKey = getActiveMonthKeyFromFilter();
+    let monthLabelFilter = null;
+    if (activeMonthKey) {
+        monthLabelFilter = formatMonthLabelFromRaw(activeMonthKey);
+    }
+
     for (const month in grouped) {
+        if (monthLabelFilter && month !== monthLabelFilter) {
+            continue; // Skip months that don't match the selected filter
+        }
         const monthContainer = createMonthContainer(month, grouped[month]);
         expenseList.appendChild(monthContainer);
     }
@@ -907,9 +2260,26 @@ function createDeleteButton(index, monthKey) {
  * @param {number} index - Index of expense in the month's array
  * @param {string} monthKey - Month key for grouping
  */
-function deleteExpense(index, monthKey) {
+async function deleteExpense(index, monthKey) {
     const grouped = groupExpensesByMonth();
+    
+    // Check if month key exists
+    if (!grouped[monthKey] || !Array.isArray(grouped[monthKey])) {
+        console.error("Month key not found in grouped expenses");
+        renderExpenses();
+        updateDashboard();
+        return;
+    }
+    
     const expenseToDelete = grouped[monthKey][index];
+    
+    // Check if expense exists
+    if (!expenseToDelete) {
+        console.error("Expense not found at index");
+        renderExpenses();
+        updateDashboard();
+        return;
+    }
     
     const realIndex = expenses.indexOf(expenseToDelete);
     
@@ -926,11 +2296,170 @@ function deleteExpense(index, monthKey) {
         selectedExpense = null;
     }
     
+    // Remove expense from Firestore if it has an ID
+    if (expenseToDelete.id) {
+        const firebaseReady = await ensureFirebaseReady();
+        if (firebaseReady && db) {
+            try {
+                await db.collection("expenses").doc(expenseToDelete.id).delete();
+                console.log("✅ Expense deleted from Firestore");
+            } catch (error) {
+                console.error("❌ Error deleting expense from Firestore:", error);
+                console.error("Error code:", error.code);
+                console.error("Error message:", error.message);
+            }
+        }
+    }
+    
     // Remove expense and save
     expenses.splice(realIndex, 1);
     localStorage.setItem("expenses", JSON.stringify(expenses));
     
     refreshAllDisplays();
+}
+
+async function getTotalIncome() {
+    if (!db || typeof db.collection !== "function") return 0;
+    try {
+        const snapshot = await db.collection("income").get();
+        let total = 0;
+        snapshot.forEach(function(doc) {
+            const data = doc.data();
+            if (data && data.init === true) return;
+            var amt = (data && (data.amount ?? data.salary ?? data.value)) ?? 0;
+            total += Number(amt) || 0;
+        });
+        return total;
+    } catch (err) {
+        console.warn("getTotalIncome error:", err);
+        return 0;
+    }
+}
+
+async function getTotalExpenses() {
+    if (!db || typeof db.collection !== "function") return 0;
+    try {
+        const snapshot = await db.collection("expenses").get();
+        let total = 0;
+        snapshot.forEach(function(doc) {
+            const data = doc.data();
+            total += Number(data.amount) || 0;
+        });
+        return total;
+    } catch (err) {
+        console.warn("getTotalExpenses error:", err);
+        return 0;
+    }
+}
+
+async function updateTotalExpenses() {
+    if (!db || typeof db.collection !== "function") return;
+    try {
+        const snapshot = await db.collection("income").get();
+        let total = 0;
+        snapshot.forEach(function(doc) {
+            const data = doc.data();
+            if (data && data.init === true) return;
+            var amt = (data && (data.amount ?? data.salary ?? data.value)) ?? 0;
+            total += Number(amt) || 0;
+        });
+    } catch (err) {
+        console.warn("updateTotalExpenses error:", err);
+    }
+}
+
+async function loadSummary() {
+    try {
+        const income = await getTotalIncome();
+        const expenses = await getTotalExpenses();
+        const netBalance = income - expenses;
+        const totalIncomeEl = document.getElementById("totalIncome");
+        const totalExpensesEl = document.getElementById("totalExpenses");
+        const netBalanceEl = document.getElementById("netBalance");
+        if (totalIncomeEl) totalIncomeEl.textContent = income.toFixed(2);
+        if (totalExpensesEl) totalExpensesEl.textContent = expenses.toFixed(2);
+        if (netBalanceEl) netBalanceEl.textContent = netBalance.toFixed(2);
+    } catch (err) {
+        console.warn("loadSummary error:", err);
+    }
+}
+
+async function loadRecurringBills() {
+    var totalEl = document.getElementById("recurringBillsTotal");
+    var listEl = document.getElementById("recurringBillsList");
+    if (!totalEl) return;
+    var total = 0;
+    var items = [];
+    if (db && typeof db.collection === "function") {
+        try {
+            var snapshot = await db.collection("recurring_bills").get();
+            snapshot.forEach(function(doc) {
+                var data = doc.data();
+                if (data && data.init === true) return;
+                var amt = Number(data && data.amount);
+                if (isNaN(amt)) amt = 0;
+                total += amt;
+                var label = (data && (data.name || data.label || data.note)) || "Bill";
+                items.push({ label: label, amount: amt });
+            });
+        } catch (err) {
+            console.warn("loadRecurringBills error:", err);
+        }
+    }
+    totalEl.textContent = total.toFixed(2);
+    if (listEl) {
+        listEl.innerHTML = "";
+        items.forEach(function(item) {
+            var li = document.createElement("li");
+            li.textContent = item.label + " — £" + item.amount.toFixed(2);
+            listEl.appendChild(li);
+        });
+    }
+}
+
+async function loadSavingGoals() {
+    var listEl = document.getElementById("savingGoalsList");
+    if (!listEl) return;
+    var goals = [];
+    if (db && typeof db.collection === "function") {
+        try {
+            var snapshot = await db.collection("saving_goals").get();
+            snapshot.forEach(function(doc) {
+                var data = doc.data();
+                if (data && data.init === true) return;
+                var target = Number(data && (data.target ?? data.targetAmount ?? data.goalAmount));
+                var current = Number(data && (data.current ?? data.currentAmount ?? data.saved));
+                if (isNaN(target)) target = 0;
+                if (isNaN(current)) current = 0;
+                var progress = target > 0 ? Math.min(100, (current / target) * 100) : 0;
+                var label = (data && (data.name ?? data.label ?? data.title ?? data.note)) || "Goal";
+                goals.push({ label: label, current: current, target: target, progress: progress });
+            });
+        } catch (err) {
+            console.warn("loadSavingGoals error:", err);
+        }
+    }
+    listEl.innerHTML = "";
+    goals.forEach(function(g) {
+        var li = document.createElement("li");
+        li.className = "saving-goal-item";
+        var labelEl = document.createElement("span");
+        labelEl.className = "saving-goal-label";
+        labelEl.textContent = g.label + " — £" + g.current.toFixed(2) + " / £" + g.target.toFixed(2);
+        var barWrap = document.createElement("div");
+        barWrap.className = "saving-goal-bar-wrap";
+        var bar = document.createElement("div");
+        bar.className = "saving-goal-bar";
+        bar.style.width = g.progress.toFixed(0) + "%";
+        var pct = document.createElement("span");
+        pct.className = "saving-goal-pct";
+        pct.textContent = g.progress.toFixed(0) + "%";
+        barWrap.appendChild(bar);
+        barWrap.appendChild(pct);
+        li.appendChild(labelEl);
+        li.appendChild(barWrap);
+        listEl.appendChild(li);
+    });
 }
 
 // ============================================================================
@@ -1032,39 +2561,57 @@ function calculateTotal() {
 // ============================================================================
 
 /**
- * Updates the dashboard with current month's statistics
+ * Updates the dashboard with current month's statistics.
+ * "Total This Month" shows income minus expenses (net) for the month.
  */
-function updateDashboard() {
+async function updateDashboard() {
+    const dashboardEmptyState = document.getElementById("dashboardEmptyState");
+    const dashboardCards = document.getElementById("dashboardCards");
+    const hasExpenses = Array.isArray(expenses) && expenses.length > 0;
+
+    if (dashboardEmptyState) {
+        dashboardEmptyState.classList.toggle("hidden", hasExpenses);
+        dashboardEmptyState.setAttribute("aria-hidden", hasExpenses);
+    }
+    if (dashboardCards) {
+        dashboardCards.classList.toggle("hidden", !hasExpenses);
+    }
+    if (!hasExpenses) {
+        return;
+    }
+
     const monthlyTotalEl = document.getElementById("MonthlyTotal");
     const topCategoryEl = document.getElementById("top-category");
     const averageExpenseEl = document.getElementById("average-expense");
     
     if (!monthlyTotalEl || !topCategoryEl || !averageExpenseEl) {
-        return; // Elements not found yet
+        return;
     }
     
     const now = new Date();
-    const currentMonth = now.toISOString().slice(0, 7); // YYYY-MM format
+    const currentMonth = now.toISOString().slice(0, 7);
     
-    // Filter expenses for current month
     const monthlyExpenses = expenses.filter(exp => 
         exp && exp.date && typeof exp.date === 'string' && exp.date.startsWith(currentMonth)
     );
     
-    // Calculate and display monthly total (with validation)
-    const monthlyTotal = monthlyExpenses.reduce((sum, e) => {
-        if (!e || typeof e.amount !== 'number' || isNaN(e.amount)) {
-            return sum;
-        }
+    const monthlyExpensesTotal = monthlyExpenses.reduce((sum, e) => {
+        if (!e || typeof e.amount !== 'number' || isNaN(e.amount)) return sum;
         return sum + e.amount;
     }, 0);
-    animateValue(monthlyTotalEl, monthlyTotal, "£");
+
+    var income = 0;
+    try {
+        income = await getTotalIncome();
+    } catch (e) {
+        console.warn("updateDashboard getTotalIncome:", e);
+    }
+    var netThisMonth = income - monthlyExpensesTotal;
+    animateValue(monthlyTotalEl, netThisMonth, "£");
     
-    // Find biggest spending category
     const biggestCategory = findTopCategory(monthlyExpenses);
     animateText(topCategoryEl, biggestCategory);
     
-    // Calculate and display average daily spend (based on actual days with expenses)
     const avgDailySpend = calculateAverageDailySpend(monthlyExpenses, now);
     animateValue(averageExpenseEl, avgDailySpend, "£");
 }
@@ -1288,8 +2835,17 @@ function downloadCSVFile(csvContent) {
  * Renders the monthly expenses chart
  */
 function renderChart() {
-    // Always render - chart will be visible when history page is active
+    if (typeof Chart === 'undefined') {
+        console.warn("[Charts] Chart.js not loaded");
+        return;
+    }
+    const historyPage = document.getElementById("historyPage");
+    const isHistoryVisible = historyPage && historyPage.classList.contains("active");
+    if (!isHistoryVisible) {
+        return; // Skip render when History tab not visible so canvas has no size yet
+    }
     rendermonthlyChart();
+    renderCategoryChart();
 }
 
 /**
@@ -1298,13 +2854,15 @@ function renderChart() {
 function rendermonthlyChart() {
     const chartElement = document.getElementById("MonthlyChart");
     if (!chartElement) {
-        console.warn("MonthlyChart element not found");
+        console.warn("[Charts] MonthlyChart canvas not found");
         return;
     }
-    
+    const section = document.getElementById("monthlyChartSection");
+    const isVisible = section && section.classList.contains("chart-visible");
+    if (!isVisible) {
+        return;
+    }
     const {labels, data} = getMonthlyTotals();
-    
-    // Don't render if no data
     if (labels.length === 0 || data.length === 0) {
         if (monthlyChart) {
             monthlyChart.destroy();
@@ -1312,7 +2870,6 @@ function rendermonthlyChart() {
         }
         return;
     }
-    
     const ctx = chartElement.getContext("2d");
     
     // Destroy existing chart if it exists
@@ -1345,13 +2902,103 @@ function rendermonthlyChart() {
 }
 
 /**
+ * Renders a category breakdown doughnut chart using Chart.js
+ */
+function renderCategoryChart() {
+    const chartElement = document.getElementById("ExpensesChart");
+    if (!chartElement) {
+        return;
+    }
+    const section = document.getElementById("categoryChartSection");
+    const isVisible = section && section.classList.contains("chart-visible");
+    if (!isVisible) {
+        return;
+    }
+
+    // Use active-month expenses (or all) for category breakdown
+    const activeMonthKey = getActiveMonthKeyFromFilter();
+    const monthlyExpenses = expenses.filter(exp => {
+        if (!exp || !exp.date || typeof exp.date !== 'string') return false;
+        if (!activeMonthKey) return true; // "all months"
+        return exp.date.slice(0, 7) === activeMonthKey;
+    });
+
+    const categoryTotals = calculateCategoryTotals(monthlyExpenses);
+    const labels = Object.keys(categoryTotals);
+    const data = Object.values(categoryTotals);
+
+    // If no data, destroy existing chart and exit
+    if (labels.length === 0 || data.length === 0) {
+        if (categoryChart) {
+            categoryChart.destroy();
+            categoryChart = null;
+        }
+        return;
+    }
+
+    const ctx = chartElement.getContext("2d");
+
+    if (categoryChart) {
+        categoryChart.destroy();
+    }
+
+    const colors = createChartColors();
+
+    categoryChart = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+            labels,
+            datasets: [{
+                data,
+                backgroundColor: colors.background,
+                borderColor: colors.border,
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'bottom',
+                    labels: {
+                        color: '#A6A6A6',
+                        font: {
+                            family: "'Inter', sans-serif",
+                            size: 12
+                        }
+                    }
+                }
+            },
+            cutout: '60%'
+        }
+    });
+}
+
+/**
  * Creates chart colors based on theme
  * @returns {Object} Object containing background and border colors
  */
 function createChartColors() {
+    // Minimal finance palette: soft golds with subtle contrast
+    const baseColors = [
+        'rgba(245, 192, 122, 0.85)', // primary gold
+        'rgba(245, 192, 122, 0.55)', // lighter gold
+        'rgba(245, 192, 122, 0.35)', // very light gold
+        'rgba(245, 192, 122, 0.20)'  // faint accent
+    ];
+
+    const borderColors = [
+        '#f5c07a',
+        '#e8b066',
+        '#dba25c',
+        '#c98f4f'
+    ];
+
     return {
-        background: 'rgba(245, 192, 122, 0.7)',
-        border: '#f5c07a'
+        background: baseColors,
+        border: borderColors
     };
 }
 
@@ -1360,14 +3007,12 @@ function createChartColors() {
  * @returns {Object} Chart.js options object
  */
 function getChartOptions() {
-    const isDark = isDarkMode();
-    
     return {
         responsive: true,
         maintainAspectRatio: false,
         animation: {
-            duration: 1500,
-            easing: 'easeInOutQuart'
+            duration: 1200,
+            easing: 'easeOutQuart'
         },
         plugins: {
             legend: {
@@ -1377,36 +3022,39 @@ function getChartOptions() {
                     color: '#A6A6A6',
                     font: {
                         family: "'Inter', sans-serif",
-                        size: 13,
+                        size: 12,
                         weight: '500'
                     },
-                    padding: 16,
+                    padding: 8,
                     usePointStyle: true,
                     pointStyle: 'circle'
                 }
             },
             tooltip: {
-                backgroundColor: 'rgba(27, 29, 35, 0.95)',
-                padding: 12,
-                titleColor: '#fff',
-                bodyColor: '#fff',
-                borderColor: 'rgba(245, 192, 122, 0.5)',
+                backgroundColor: 'rgba(27, 29, 35, 0.98)',
+                padding: 10,
+                titleColor: '#FFFFFF',
+                bodyColor: '#FFFFFF',
+                borderColor: 'rgba(245, 192, 122, 0.7)',
                 borderWidth: 1,
-                cornerRadius: 8,
+                cornerRadius: 6,
                 displayColors: true,
                 titleFont: {
                     family: "'Inter', sans-serif",
-                    size: 14,
+                    size: 13,
                     weight: '600'
                 },
                 bodyFont: {
                     family: "'Inter', sans-serif",
-                    size: 13
+                    size: 12
                 },
                 callbacks: {
                     label: function(context) {
-                        if (!context || !context.parsed) return '';
-                        return 'Amount: £' + context.parsed.y.toLocaleString('en-GB', {
+                        if (!context || typeof context.parsed !== 'object') return '';
+                        const value = typeof context.parsed.y === 'number'
+                            ? context.parsed.y
+                            : context.parsed;
+                        return '£' + value.toLocaleString('en-GB', {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2
                         });
@@ -1428,28 +3076,29 @@ function getChartOptions() {
                     color: '#A6A6A6',
                     font: {
                         family: "'Inter', sans-serif",
-                        size: 12,
+                        size: 11,
                         weight: '400'
                     },
-                    padding: 12
+                    padding: 8
                 }
             },
             y: {
                 beginAtZero: true,
                 grid: {
-                    color: 'rgba(166, 166, 166, 0.2)',
-                    lineWidth: 1,
+                    color: 'rgba(58, 61, 69, 0.45)',
+                    borderDash: [3, 4],
                     drawBorder: false
                 },
                 ticks: {
-                    color: '#A6A6A6',
+                    color: '#6B6B6B',
                     font: {
-                        family: "'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif",
-                        size: 12,
-                        weight: '500'
+                        family: "'Inter', sans-serif",
+                        size: 10,
+                        weight: '400'
                     },
-                    padding: 12,
+                    padding: 6,
                     callback: function(value) {
+                        if (typeof value !== 'number') return value;
                         return '£' + value.toLocaleString('en-GB', {
                             minimumFractionDigits: 0,
                             maximumFractionDigits: 0
@@ -1525,4 +3174,50 @@ function getMonthlyTotals() {
     const data = sortedMonths.map(month => monthlyMap[month]);
     
     return {labels, data};
+}
+
+/**
+ * Returns the active month key from the filter
+ * @returns {string|null} 'YYYY-MM' for a specific month, or null for "all months"
+ */
+function getActiveMonthKeyFromFilter() {
+    // Default to current month if no explicit selection
+    if (!selectedMonthFilter || selectedMonthFilter === "current") {
+        const now = new Date();
+        return now.toISOString().slice(0, 7);
+    }
+
+    if (selectedMonthFilter === "all") {
+        return null;
+    }
+
+    // Specific month value like '2026-01'
+    return selectedMonthFilter;
+}
+
+/**
+ * Formats a raw YYYY-MM string into a readable label (e.g., "January 2026")
+ * @param {string} monthStr
+ * @returns {string}
+ */
+function formatMonthLabelFromRaw(monthStr) {
+    try {
+        const [year, month] = monthStr.split('-');
+        const yearNum = parseInt(year, 10);
+        const monthNum = parseInt(month, 10);
+
+        if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
+            return monthStr;
+        }
+
+        const date = new Date(yearNum, monthNum - 1);
+        if (isNaN(date.getTime())) {
+            return monthStr;
+        }
+
+        return date.toLocaleString("en-UK", { month: "long", year: "numeric" });
+    } catch (error) {
+        console.warn("Error formatting month label from raw:", monthStr, error);
+        return monthStr;
+    }
 }

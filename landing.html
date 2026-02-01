@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Valoro – Take control of your money</title>
+    <link rel="stylesheet" href="landing.css" />
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+</head>
+<body>
+    <main class="landing">
+        <div class="landing-inner">
+            <h1 class="landing-title">Valoro</h1>
+            <p class="landing-tagline">Take control of your money.</p>
+            <p class="landing-subtitle">One app for spending, budgets and insights. Join the waitlist for early access.</p>
+
+            <form id="waitlistForm" class="landing-form" aria-label="Join waitlist">
+                <label for="waitlistEmail" class="sr-only">Email</label>
+                <input type="email" id="waitlistEmail" name="email" placeholder="Enter your email" required autocomplete="email" />
+                <button type="submit" id="joinBtn">Join waitlist</button>
+                <p id="waitlistMsg" class="landing-msg" role="status" aria-live="polite"></p>
+            </form>
+        </div>
+    </main>
+    <script src="landing.js"></script>
+</body>
+</html>

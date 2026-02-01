@@ -1,23 +1,24 @@
-
+<!DOCTYPE html>
 <html lang="en"> 
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Winner</title>
         <link rel="stylesheet" href="style.css" />
-        <script
-        src="https://cdn.jsdelivr.net/npm/chart.js"
-        ></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <!-- Firebase compat SDK (required for firebase.xxx syntax) -->
+        <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+        <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+        <script 
+        src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     </head>
     <body>
+ 
         <div class="container">
             <div class="application">
                 <div class="card">
                     <div class="header-section">
                         <h1>Winner</h1>
-                        <button id="darkModeToggle" class="dark-mode-toggle" type="button" aria-label="Toggle dark mode">
-                            <span class="toggle-icon">🌙</span>
-                        </button>
                     </div>
                     <div class="main-content">EXPENSE TRACKER</div>
                     
@@ -29,25 +30,50 @@
                         <button class="nav-tab" data-page="history" id="historyTab">
                             <span>History</span>
                         </button>
+                        <button class="nav-tab" data-page="hourly" id="hourlyTab">
+                            <span>Hourly Tracker</span>
+                        </button>
                     </div>
                     
                     <!-- Page 1: Home (Add Expense) -->
                     <div class="page active" id="homePage">
                         <!-- Dashboard -->
                         <div id="dashboard">
-                            <div class="dashboard-card">
-                                <h3>Total This Month</h3>
-                                <p id="MonthlyTotal" class="dashboard-value">£0.00</p>
+                            <div id="dashboardEmptyState" class="dashboard-empty-state" aria-hidden="false">
+                                <p class="dashboard-empty-label">No data yet</p>
+                                <p class="dashboard-empty-hint">Add an expense below.</p>
                             </div>
-                            <div class="dashboard-card">
-                                <h3>Biggest Category</h3>
-                                <p id="top-category" class="dashboard-value">-</p>
+                            <div id="dashboardCards" class="dashboard-cards hidden">
+                                <div class="dashboard-card" id="monthlyTotalCard">
+                                    <h3>Total This Month</h3>
+                                    <p id="MonthlyTotal" class="dashboard-value">£0.00</p>
+                                </div>
+                                <div class="dashboard-card" id="biggestCategoryCard">
+                                    <h3>Biggest Category</h3>
+                                    <p id="top-category" class="dashboard-value">-</p>
+                                </div>
+                                <div class="dashboard-card" id="avgExpenseCard">
+                                    <h3>Avg Daily Spend</h3>
+                                    <p id="average-expense" class="dashboard-value">£0.00</p>
+                                </div>
                             </div>
-                            <div class="dashboard-card">
-                                <h3>Avg Daily Spend</h3>
-                                <p id="average-expense" class="dashboard-value">£0.00</p>
+                            <div id="summary" class="dashboard-summary">
+                                <h2>Overview</h2>
+                                <p>Total Income: £<span id="totalIncome">0.00</span></p>
+                                <p>Total Expenses: £<span id="totalExpenses">0.00</span></p>
+                                <p><strong>Net balance: £<span id="netBalance">0.00</span></strong></p>
+                            </div>
+                            <div id="recurringBillsSection" class="recurring-bills">
+                                <h2>Recurring bills</h2>
+                                <p>Total: £<span id="recurringBillsTotal">0.00</span></p>
+                                <ul id="recurringBillsList" class="recurring-bills-list"></ul>
+                            </div>
+                            <div id="savingGoalsSection" class="saving-goals">
+                                <h2>Saving goals</h2>
+                                <ul id="savingGoalsList" class="saving-goals-list"></ul>
                             </div>
                         </div>
+
                         
                         <h2>Add expense</h2>
                         <p id="total">Total: £0.00</p>
@@ -87,8 +113,23 @@
                     <div class="page" id="historyPage">
                         <h2>Expense History</h2>
                         
-                        <!-- Chart Section -->
-                        <div class="chart-container">
+                        <!-- Month Filter -->
+                        <div class="month-filter">
+                            <label for="monthFilter">Month</label>
+                            <select id="monthFilter">
+                                <option value="current">This month</option>
+                                <option value="all">All months</option>
+                            </select>
+                        </div>
+                        
+                        <!-- History Toggles -->
+                        <div class="history-toggle-row">
+                            <button id="toggleMonthlyChartBtn" class="history-toggle-btn">Hide monthly chart</button>
+                            <button id="toggleCategoryChartBtn" class="history-toggle-btn">Hide category chart</button>
+                        </div>
+                        
+                        <!-- Chart Section (visible by default so charts show) -->
+                        <div class="chart-container chart-visible" id="monthlyChartSection">
                             <h3>Monthly Expenses Chart</h3>
                             <canvas id="MonthlyChart"></canvas>
                         </div>
@@ -104,7 +145,79 @@
                         </div>
                         
                         <!-- Expenses List -->
-                        <ul id="expense-list"></ul>
+                        <div class="history-tools">
+                            <button id="toggleExpenseListBtn" class="history-toggle-btn">Hide expenses</button>
+                            <input id="expenseSearch" type="text" placeholder="Search notes, category, date..." />
+                        </div>
+
+                        <h3>This Month</h3>
+                        <p id="historyMonthlyTotal">£0.00</p>
+
+                        <h4>By Category</h4>
+                        <ul id="categorySummary"></ul>
+
+                        <!-- Category Chart (visible by default) -->
+                        <div class="chart-container chart-visible" id="categoryChartSection">
+                            <h3>Spending by Category</h3>
+                            <canvas id="ExpensesChart"></canvas>
+                        </div>
+                        
+                        <h3>Expenses</h3>
+                        <ul id="expense-list" class="expense-list-visible"></ul>
+                    </div>
+
+                    <!-- Page 3: Hourly Tracker -->
+                    <div class="page" id="hourlyPage">
+                        <h2>Hourly Tracker</h2>
+                        <div class="hourly-rate-setting">
+                            <label for="hourlyRateInput">Hourly rate (£)</label>
+                            <input type="number" id="hourlyRateInput" min="0" step="0.01" placeholder="0.00" />
+                            <button type="button" id="saveHourlyRateBtn" class="save-hourly-rate-btn">Save</button>
+                            <span id="hourlyRateMsg" class="hourly-msg" aria-live="polite"></span>
+                        </div>
+                        <div class="hourly-tracker-actions">
+                            <button type="button" id="startWorkBtn" class="start-work-btn">Start work</button>
+                        </div>
+                        <div id="breakEntryWrap" class="break-entry-wrap" style="display: none;" aria-live="polite">
+                            <p class="break-entry-label">How long were you on break?</p>
+                            <div class="break-entry-inputs">
+                                <input type="number" id="breakDurationInput" min="0" step="0.5" value="0" placeholder="0" aria-label="Break duration" />
+                                <select id="breakUnitSelect" aria-label="Break unit">
+                                    <option value="minutes">minutes</option>
+                                    <option value="hours">hours</option>
+                                </select>
+                            </div>
+                            <div class="break-entry-buttons">
+                                <button type="button" id="confirmSessionBtn" class="confirm-session-btn">Save session</button>
+                                <button type="button" id="cancelBreakEntryBtn" class="cancel-break-btn">Cancel</button>
+                            </div>
+                        </div>
+                        <div id="hourlyTimerWrap" class="hourly-timer-wrap" aria-live="polite">
+                            <span id="hourlyTimerDisplay" class="hourly-timer-display">00:00:00</span>
+                        </div>
+                        <p id="startWorkMsg" class="hourly-msg" role="status"></p>
+                        <p id="todayEarningDisplay" class="today-earning">Today: £0.00</p>
+                        <p id="weekEarningDisplay" class="week-earning">This week: £0.00</p>
+                        <p id="pacingDisplay" class="pacing-projection">If you keep this pace: £0.00 today, £0.00 week, £0.00 month</p>
+                        <div id="workSessionsSection" class="work-sessions-section">
+                            <h3>Past sessions</h3>
+                            <ul id="workSessionsList" class="work-sessions-list"></ul>
+                        </div>
+                    </div>
+
+                    <!-- Waitlist Modal -->
+                    <div id="waitlistModal" class="card">
+                        <h3>Winner Pro - Coming Soon</h3>
+                        <p>Advanced insights, trading and mortgage tracking. Join the waitlist to get early access to Winner Pro.</p>
+                        <p class="waitlist-share">
+                            <a href="landing.html" target="_blank" rel="noopener">Share Valoro waitlist page ↗</a>
+                        </p>
+                        <form id="waitlistForm" aria-label="Join waitlist">
+                            <label for="waitlistEmail">Email</label>
+                            <input type="email" id="waitlistEmail" name="email" placeholder="Enter your email" required autocomplete="email"/>
+                            <button type="submit" id="joinWaitlistBtn">Join Waitlist</button>
+                            <p id="waitlistMsg" class="success" role="status" style="display: none;"></p>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -175,7 +288,6 @@
                         <option value="Bills">Bills</option>
                         <option value="Other">Other</option>
                     </select>
-                    
                     <button type="button" id="saveEditBtn">Save Changes</button>
                 </form>
             </div>
