@@ -9,8 +9,6 @@
         <!-- Firebase compat SDK (required for firebase.xxx syntax) -->
         <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
         <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
-        <script 
-        src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     </head>
     <body>
  
@@ -56,6 +54,22 @@
                                     <h3>Avg Daily Spend</h3>
                                     <p id="average-expense" class="dashboard-value">£0.00</p>
                                 </div>
+                                <div class="dashboard-card" id="dailyBillsCard">
+                                    <h3>Daily Bills</h3>
+                                    <p id="dailyBillsValue" class="dashboard-value">£0.00</p>
+                                </div>
+                            </div>
+                            <div id="todaysBreakdownSection" class="todays-breakdown-section">
+                                <h2>Today's Breakdown</h2>
+                                <p>You earned today: £<span id="breakdownEarnedToday">0.00</span></p>
+                                <p>Your daily bills share: £<span id="breakdownDailyBills">0.00</span></p>
+                                <p>Suggested to save: £<span id="breakdownSuggestedSave">0.00</span></p>
+                                <p>Safe to spend today: £<span id="breakdownSafeToSpend">0.00</span></p>
+                            </div>
+                            <div id="monthlyOverviewSection" class="monthly-overview-section">
+                                <h2>Monthly Overview</h2>
+                                <p class="monthly-overview-bills">Total Bills this month: £<span id="monthlyOverviewBills">0.00</span></p>
+                                <p class="monthly-overview-spending">Total Spending this month: £<span id="monthlyOverviewSpending">0.00</span></p>
                             </div>
                             <div id="summary" class="dashboard-summary">
                                 <h2>Overview</h2>
@@ -104,6 +118,19 @@
                                 <option value="Bills">Bills</option>
                                 <option value="Other">Other</option>
                             </select>
+
+                            <label for="expenseType">Type</label>
+                            <select id="expenseType" aria-label="Expense type">
+                                <option value="spending" selected>Spending (discretionary)</option>
+                                <option value="bill">Bill (fixed/recurring)</option>
+                            </select>
+                            <div id="billScheduleWrap" class="bill-schedule-wrap hidden" aria-hidden="true">
+                                <label for="billSchedule">Bill schedule</label>
+                                <select id="billSchedule" aria-label="Bill schedule">
+                                    <option value="single" selected>Single time</option>
+                                    <option value="recurring">Recurring</option>
+                                </select>
+                            </div>
 
                             <button type="submit">Add expense</button>
                         </form>
@@ -172,7 +199,9 @@
                         <div class="hourly-rate-setting">
                             <label for="hourlyRateInput">Hourly rate (£)</label>
                             <input type="number" id="hourlyRateInput" min="0" step="0.01" placeholder="0.00" />
-                            <button type="button" id="saveHourlyRateBtn" class="save-hourly-rate-btn">Save</button>
+                            <label for="savingsPercentInput">Auto-save percentage (%)</label>
+                            <input type="number" id="savingsPercentInput" min="0" max="100" step="0.5" placeholder="20" aria-label="Auto-save percentage" />
+                            <button type="button" id="savePreferenceBtn" class="save-preference-btn">Save preference</button>
                             <span id="hourlyRateMsg" class="hourly-msg" aria-live="polite"></span>
                         </div>
                         <div class="hourly-tracker-actions">
@@ -199,25 +228,17 @@
                         <p id="todayEarningDisplay" class="today-earning">Today: £0.00</p>
                         <p id="weekEarningDisplay" class="week-earning">This week: £0.00</p>
                         <p id="pacingDisplay" class="pacing-projection">If you keep this pace: £0.00 today, £0.00 week, £0.00 month</p>
+                        <div id="smartSavingsBox" class="smart-savings-box" aria-live="polite">
+                            <h3 class="smart-savings-title">Smart savings</h3>
+                            <p id="suggestedSavingsDisplay" class="suggested-savings-text">Suggested to save today £0.00</p>
+                            <p id="safeToSpendDisplay" class="safe-to-spend-text">Safe to spend today £0.00</p>
+                            <p id="safeToSpendSmartMessage" class="smart-savings-message safe-to-spend-message" role="status" aria-live="polite"></p>
+                            <p id="smartSavingsMessage" class="smart-savings-message" role="status"></p>
+                        </div>
                         <div id="workSessionsSection" class="work-sessions-section">
                             <h3>Past sessions</h3>
                             <ul id="workSessionsList" class="work-sessions-list"></ul>
                         </div>
-                    </div>
-
-                    <!-- Waitlist Modal -->
-                    <div id="waitlistModal" class="card">
-                        <h3>Winner Pro - Coming Soon</h3>
-                        <p>Advanced insights, trading and mortgage tracking. Join the waitlist to get early access to Winner Pro.</p>
-                        <p class="waitlist-share">
-                            <a href="landing.html" target="_blank" rel="noopener">Share Valoro waitlist page ↗</a>
-                        </p>
-                        <form id="waitlistForm" aria-label="Join waitlist">
-                            <label for="waitlistEmail">Email</label>
-                            <input type="email" id="waitlistEmail" name="email" placeholder="Enter your email" required autocomplete="email"/>
-                            <button type="submit" id="joinWaitlistBtn">Join Waitlist</button>
-                            <p id="waitlistMsg" class="success" role="status" style="display: none;"></p>
-                        </form>
                     </div>
                 </div>
             </div>
@@ -259,6 +280,40 @@
             </div>
         </div>
         
+        <!-- Edit Work Session Modal (Hourly Tracker) -->
+        <div id="editWorkSessionModal" class="modal" aria-labelledby="editWorkSessionTitle" aria-hidden="true">
+            <div class="modal-content">
+                <span class="close" id="closeEditWorkSessionModal" aria-label="Close">&times;</span>
+                <h2 id="editWorkSessionTitle">Edit session</h2>
+                <p class="edit-work-session-hint">Select start, finish and break — total worked is auto-calculated.</p>
+                <div class="edit-work-session-field">
+                    <label for="editWorkSessionStartInput">Start</label>
+                    <input type="datetime-local" id="editWorkSessionStartInput" aria-label="Start date and time" />
+                </div>
+                <div class="edit-work-session-field">
+                    <label for="editWorkSessionFinishInput">Finish</label>
+                    <input type="datetime-local" id="editWorkSessionFinishInput" aria-label="Finish date and time" />
+                </div>
+                <p class="edit-work-session-break-label">Break time</p>
+                <div class="edit-work-session-time-inputs">
+                    <div class="edit-work-session-field">
+                        <label for="editWorkSessionBreakHoursInput">Hours</label>
+                        <input type="number" id="editWorkSessionBreakHoursInput" min="0" step="1" placeholder="0" aria-label="Break hours" />
+                    </div>
+                    <div class="edit-work-session-field">
+                        <label for="editWorkSessionBreakMinutesInput">Minutes</label>
+                        <input type="number" id="editWorkSessionBreakMinutesInput" min="0" max="59" step="1" placeholder="0" aria-label="Break minutes" />
+                    </div>
+                </div>
+                <p class="edit-work-session-total-label">Total worked: <span id="editWorkSessionTotalDisplay" class="edit-work-session-total-value">0h 0m</span></p>
+                <div class="edit-work-session-actions">
+                    <button type="button" id="saveEditWorkSessionBtn" class="save-edit-work-session-btn">Save</button>
+                    <button type="button" id="cancelEditWorkSessionBtn" class="cancel-edit-work-session-btn">Cancel</button>
+                </div>
+                <p id="editWorkSessionMsg" class="hourly-msg" role="status" style="margin-top: 8px;"></p>
+            </div>
+        </div>
+
         <!-- Edit Modal -->
         <div id="editModal" class="modal">
             <div class="modal-content">
@@ -288,6 +343,18 @@
                         <option value="Bills">Bills</option>
                         <option value="Other">Other</option>
                     </select>
+                    <label for="edit-type">Type</label>
+                    <select id="edit-type" aria-label="Expense type">
+                        <option value="spending">Spending (discretionary)</option>
+                        <option value="bill">Bill (fixed/recurring)</option>
+                    </select>
+                    <div id="editBillScheduleWrap" class="bill-schedule-wrap">
+                        <label for="edit-billSchedule">Bill schedule</label>
+                        <select id="edit-billSchedule" aria-label="Bill schedule">
+                            <option value="single">Single time</option>
+                            <option value="recurring">Recurring</option>
+                        </select>
+                    </div>
                     <button type="button" id="saveEditBtn">Save Changes</button>
                 </form>
             </div>

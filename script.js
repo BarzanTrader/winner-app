@@ -7,6 +7,10 @@
  * - Dashboard with key metrics
  * - CSV export functionality
  * - Local storage persistence
+ * ============================================================================
+ * Firebase: Uses compat SDK (firebase-app-compat, firebase-firestore-compat).
+ * Firebase v9 modular imports can be adopted in a future migration without
+ * breaking existing features.
  * ============================================================================ */
 
 
@@ -57,23 +61,26 @@ async function initializeFirebase() {
             return false;
         }
         
-        // Enable offline persistence
-        try {
-            await db.enablePersistence();
+        // Enable offline persistence (non-blocking; don't fail init)
+        db.enablePersistence().then(function() {
             console.log("✅ Firestore offline persistence enabled");
-        } catch (persistenceError) {
-            console.warn("⚠️ Could not enable offline persistence:", persistenceError);
-            // Continue anyway - app will still work
-        }
-        
-        // Test connection and wait for it
-        await testFirebaseConnection();
-        
+        }).catch(function(persistenceError) {
+            console.warn("⚠️ Offline persistence:", persistenceError);
+        });
+
+        // Test connection with timeout so we don't hang the app
+        var connectionTimeout = new Promise(function(_, reject) {
+            setTimeout(function() { reject(new Error("Connection timeout")); }, 6000);
+        });
+        Promise.race([testFirebaseConnection(), connectionTimeout]).catch(function(e) {
+            console.warn("Firebase connection test:", e && e.message ? e.message : e);
+        });
+
         // Create base collections on initialization (non-blocking)
-        createBaseCollections().catch(err => {
+        createBaseCollections().catch(function(err) {
             console.error("Failed to create base collections:", err);
         });
-        
+
         return true;
     } catch (error) {
         console.error("❌ Firebase initialization error:", error);
@@ -152,6 +159,8 @@ let hourlySessionDocId = null;
 let hourlySessionStartTime = null;
 let hourlyTimerIntervalId = null;
 let currentHourlyRate = 0;
+/** Savings percentage (0–100), from user_settings */
+let currentSavingsPercent = 0;
 /** When set, user clicked Stop work and we're waiting for break duration before saving */
 let hourlySessionPausedAt = null;
 
@@ -160,15 +169,29 @@ let hourlySessionPausedAt = null;
 // ============================================================================
 
 document.addEventListener("DOMContentLoaded", async function() {
+    // Set up app and event listeners first so buttons work even if Firebase hangs
+    try {
+        initializeApp();
+    } catch (e) {
+        console.error("initializeApp error:", e);
+    }
     // Wait a bit for Firebase SDK to load if needed
-    let attempts = 0;
+    var attempts = 0;
     while (typeof firebase === 'undefined' && attempts < 10) {
         await new Promise(resolve => setTimeout(resolve, 100));
         attempts++;
     }
     
     // Initialize Firebase first and wait for it to be ready
-    const firebaseReady = await initializeFirebase();
+    var firebaseReady = false;
+    try {
+        firebaseReady = await Promise.race([
+            initializeFirebase(),
+            new Promise(function(_, rej) { setTimeout(function() { rej(new Error("timeout")); }, 8000); })
+        ]);
+    } catch (e) {
+        console.warn("Firebase init:", e && e.message ? e.message : e);
+    }
     
     if (!firebaseReady) {
         console.warn("⚠️ Firebase not initialized - app will work in offline mode");
@@ -179,8 +202,7 @@ document.addEventListener("DOMContentLoaded", async function() {
         console.log("Global app variable:", app);
     }
     
-    // Then initialize the app
-    initializeApp();
+    // App already initialized above so buttons work; load data after Firebase
     loadSummary().catch(function(err) { console.warn("loadSummary on init:", err); });
     loadRecurringBills().catch(function(err) { console.warn("loadRecurringBills on init:", err); });
     loadSavingGoals().catch(function(err) { console.warn("loadSavingGoals on init:", err); });
@@ -363,6 +385,8 @@ function getDOMElements() {
         notesInput: document.getElementById("notes"),
         expenseList: document.getElementById("expense-list"),
         categoryInput: document.getElementById("category"),
+        typeInput: document.getElementById("expenseType"),
+        billScheduleInput: document.getElementById("billSchedule"),
         monthlyTotalCard: document.getElementById("monthlyTotalCard"),
         biggestCategoryCard: document.getElementById("biggestCategoryCard"),
         avgExpenseCard: document.getElementById("avgExpenseCard"),
@@ -513,33 +537,65 @@ async function loadExpensesFromStorage() {
                 if (isNaN(amount)) amount = 0;
                 var date = parseExpenseDate(data && data.date);
                 var category = (data && data.category) || "";
+                var typeVal = (data.type === "bill" || data.type === "spending") ? data.type : "spending";
+                var billSched = (typeVal === "bill" && (data.billSchedule === "recurring" || data.billSchedule === "single")) ? data.billSchedule : "single";
+                var recurringBillId = (data.recurringBillId && typeof data.recurringBillId === "string") ? data.recurringBillId : null;
                 expenses.push({
                     id: doc.id,
                     note: String(note),
                     amount: amount,
                     date: date,
-                    category: String(category)
+                    category: String(category),
+                    type: typeVal,
+                    billSchedule: billSched,
+                    recurringBillId: recurringBillId || undefined
                 });
             });
-            
+
+            // Backfill: any expense with type bill + recurring but no recurringBillId gets a doc in recurring_bills
+            if (typeof firebase !== "undefined" && firebase.firestore && firebase.firestore.FieldValue) {
+                for (var i = 0; i < expenses.length; i++) {
+                    var exp = expenses[i];
+                    if (exp && exp.type === "bill" && exp.billSchedule === "recurring" && !exp.recurringBillId && exp.id) {
+                        try {
+                            var rbRef = await db.collection("recurring_bills").add({
+                                amount: exp.amount,
+                                note: exp.note || "",
+                                name: exp.note || "",
+                                expenseId: exp.id,
+                                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                            exp.recurringBillId = rbRef.id;
+                            await db.collection("expenses").doc(exp.id).update({ recurringBillId: rbRef.id });
+                        } catch (backfillErr) {
+                            console.warn("Backfill recurring_bills for expense " + exp.id + ":", backfillErr);
+                        }
+                    }
+                }
+            }
+
             localStorage.setItem("expenses", JSON.stringify(expenses));
             console.log("Loaded " + expenses.length + " expenses from Firestore");
             calculateAndDisplayTotals();
             populateMonthFilterOptions();
+            loadRecurringBills().catch(function(e) { console.warn("loadRecurringBills after load:", e); });
             refreshAllDisplays();
             return;
         } catch (error) {
             console.error("Error loading expenses from Firestore:", error);
         }
     }
-    
+
     // Fallback to localStorage
     const savedExpenses = localStorage.getItem("expenses");
     
     if (savedExpenses) {
         try {
             expenses = JSON.parse(savedExpenses);
-            
+            expenses.forEach(function(exp) {
+                if (exp && (exp.type !== "bill" && exp.type !== "spending")) exp.type = "spending";
+                if (exp && (exp.billSchedule !== "recurring" && exp.billSchedule !== "single")) exp.billSchedule = "single";
+            });
             // Calculate and display totals
             calculateAndDisplayTotals();
             populateMonthFilterOptions();
@@ -614,10 +670,11 @@ function populateMonthFilterOptions() {
 function calculateAndDisplayTotals() {
     const activeMonthKey = getActiveMonthKeyFromFilter();
     
-    // Filter expenses for active month (or all if no month selected)
+    // Filter expenses for active month, excluding recurring bills (they're in Recurring bills section)
     const monthlyExpenses = expenses.filter(exp => {
         if (!exp || !exp.date || typeof exp.date !== 'string') return false;
-        if (!activeMonthKey) return true; // "all months" selected
+        if (isRecurringBill(exp)) return false;
+        if (!activeMonthKey) return true;
         return exp.date.slice(0, 7) === activeMonthKey;
     });
     
@@ -668,7 +725,9 @@ function calculateAndDisplayTotals() {
 }
 
 /**
- * Refreshes all UI displays (expenses list, total, chart, dashboard)
+ * Refreshes all UI displays (expenses list, total, chart, dashboard).
+ * Also recalculates Hourly Tracker Smart savings (daily bills, safe to spend)
+ * so it updates when expenses change (e.g. new expense added).
  */
 function refreshAllDisplays() {
     renderExpenses();
@@ -676,6 +735,7 @@ function refreshAllDisplays() {
     calculateAndDisplayTotals(); // Update monthly total and category summary
     renderChart();
     updateDashboard();
+    loadWorkSessions().catch(function(e) { console.warn("refreshAllDisplays loadWorkSessions:", e); });
 }
 
 /**
@@ -709,6 +769,17 @@ function setupFormListeners(elements) {
 
     // Form submission handler
     elements.form.addEventListener("submit", handleFormSubmit.bind(null, elements));
+    
+    // Show/hide Bill schedule when Type changes (bill = show, spending = hide)
+    function toggleBillScheduleVisibility() {
+        var wrap = document.getElementById("billScheduleWrap");
+        var typeEl = document.getElementById("expenseType");
+        if (wrap && typeEl) wrap.classList.toggle("hidden", typeEl.value !== "bill");
+    }
+    if (elements.typeInput) {
+        elements.typeInput.addEventListener("change", toggleBillScheduleVisibility);
+        toggleBillScheduleVisibility();
+    }
     
     // Real-time form validation for submit button
     setupFormValidation(elements);
@@ -774,15 +845,21 @@ function extractFormData(elements) {
             name: "",
             amount: 0,
             date: "",
-            category: ""
+            category: "",
+            type: "spending"
         };
     }
-    
+    var typeVal = elements.typeInput && elements.typeInput.value;
+    if (typeVal !== "bill" && typeVal !== "spending") typeVal = "spending";
+    var billSched = elements.billScheduleInput && elements.billScheduleInput.value;
+    if (billSched !== "recurring" && billSched !== "single") billSched = "single";
     return {
         name: elements.notesInput.value.trim(),
         amount: Number(elements.amountInput.value),
         date: elements.dateInput.value,
-        category: elements.categoryInput.value
+        category: elements.categoryInput.value,
+        type: typeVal,
+        billSchedule: billSched
     };
 }
 
@@ -821,11 +898,15 @@ function validateFormData(formData) {
  * @returns {Object} Expense object
  */
 function createExpenseObject(formData) {
+    var typeVal = formData.type === "bill" ? "bill" : "spending";
+    var billSched = (typeVal === "bill" && formData.billSchedule === "recurring") ? "recurring" : "single";
     return {
         note: formData.name,
         amount: formData.amount,
         date: formData.date,
-        category: formData.category
+        category: formData.category,
+        type: typeVal,
+        billSchedule: billSched
     };
 }
 
@@ -944,12 +1025,19 @@ async function addExpense(expense) {
                     throw new Error("Firestore db object is not valid");
                 }
                 
-                // Prepare data for Firestore
+                // Prepare data for Firestore (date as Timestamp, type: "bill" | "spending")
+                var dateTimestamp = expense.date
+                    ? firebase.firestore.Timestamp.fromDate(new Date(expense.date + "T12:00:00"))
+                    : firebase.firestore.FieldValue.serverTimestamp();
+                var expenseType = (expense.type === "bill" || expense.type === "spending") ? expense.type : "spending";
+                var billSched = (expenseType === "bill" && (expense.billSchedule === "recurring" || expense.billSchedule === "single")) ? expense.billSchedule : "single";
                 const firestoreData = {
                     amount: expense.amount,
                     category: expense.category,
                     note: expense.note,
-                    date: expense.date,
+                    date: dateTimestamp,
+                    type: expenseType,
+                    billSchedule: billSched,
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
                 
@@ -964,6 +1052,24 @@ async function addExpense(expense) {
                 
                 // Store Firestore document ID with the expense
                 expense.id = docRef.id;
+                // If recurring bill, add to recurring_bills and link
+                if (expenseType === "bill" && billSched === "recurring") {
+                    try {
+                        var rbRef = await db.collection("recurring_bills").add({
+                            amount: expense.amount,
+                            note: expense.note || "",
+                            name: expense.note || "",
+                            expenseId: expense.id,
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        expense.recurringBillId = rbRef.id;
+                        await db.collection("expenses").doc(expense.id).update({ recurringBillId: rbRef.id });
+                        localStorage.setItem("expenses", JSON.stringify(expenses));
+                        loadRecurringBills().catch(function(e) { console.warn("loadRecurringBills after add:", e); });
+                    } catch (rbErr) {
+                        console.warn("Could not add to recurring_bills:", rbErr);
+                    }
+                }
                 // Update localStorage with the ID
                 localStorage.setItem("expenses", JSON.stringify(expenses));
                 console.log("✅ Expense added to Firestore successfully!");
@@ -1281,8 +1387,11 @@ function formatElapsedHMS(seconds) {
 
 function formatMinutesAsHoursMinutes(totalMinutes) {
     if (totalMinutes == null || isNaN(totalMinutes)) return "—";
-    var h = Math.floor(totalMinutes / 60);
-    var m = Math.round(totalMinutes % 60);
+    var total = Number(totalMinutes);
+    if (total < 0) return "—";
+    var h = Math.floor(total / 60);
+    var m = Math.round(total - h * 60);
+    if (m >= 60) { m = 0; h += 1; }
     if (h > 0 && m > 0) return h + "h " + m + "m";
     if (h > 0) return h + "h";
     return m + "m";
@@ -1299,39 +1408,98 @@ function formatSessionDate(timestamp) {
     }
 }
 
+/** Format Date or Firestore Timestamp to datetime-local value (YYYY-MM-DDTHH:mm) in local time. */
+function formatToDatetimeLocal(t) {
+    if (!t) return "";
+    var d = t && typeof t.toDate === "function" ? t.toDate() : new Date(t);
+    if (isNaN(d.getTime())) return "";
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, "0");
+    var day = String(d.getDate()).padStart(2, "0");
+    var h = String(d.getHours()).padStart(2, "0");
+    var min = String(d.getMinutes()).padStart(2, "0");
+    return y + "-" + m + "-" + day + "T" + h + ":" + min;
+}
+
+/** Count Mon–Fri in the given month (1–5 = weekday). */
+function getWorkingDaysInCurrentMonth(date) {
+    var year = date.getFullYear();
+    var month = date.getMonth();
+    var first = new Date(year, month, 1);
+    var last = new Date(year, month + 1, 0);
+    var count = 0;
+    var d = new Date(first);
+    while (d <= last) {
+        var day = d.getDay();
+        if (day >= 1 && day <= 5) count++;
+        d.setDate(d.getDate() + 1);
+    }
+    return count;
+}
+
 var USER_SETTINGS_HOURLY_DOC_ID = "hourly";
 
+/**
+ * user_settings/hourly doc: { hourlyRate: number, savingsPercent: number }
+ */
 async function loadUserSettingsHourlyRate() {
     var inputEl = document.getElementById("hourlyRateInput");
+    var savingsInputEl = document.getElementById("savingsPercentInput");
     if (!inputEl) return;
     if (!db || typeof db.collection !== "function") return;
     try {
         var doc = await db.collection("user_settings").doc(USER_SETTINGS_HOURLY_DOC_ID).get();
         var rate = 0;
+        var savingsPercent = 0;
         if (doc.exists && doc.data()) {
-            rate = Number(doc.data().hourlyRate);
+            var data = doc.data();
+            rate = Number(data.hourlyRate);
             if (isNaN(rate)) rate = 0;
+            savingsPercent = Number(data.savingsPercent);
+            if (isNaN(savingsPercent) || savingsPercent < 0 || savingsPercent > 100) savingsPercent = 0;
         }
         currentHourlyRate = rate;
+        currentSavingsPercent = savingsPercent;
         inputEl.value = rate > 0 ? rate.toFixed(2) : "";
+        if (savingsInputEl) savingsInputEl.value = savingsPercent > 0 ? String(savingsPercent) : "";
     } catch (err) {
         console.warn("loadUserSettingsHourlyRate error:", err);
     }
 }
 
+/**
+ * When user clicks "Save preference": read hourly rate and savings percentage from UI,
+ * then store both in Firestore user_settings/hourly so savings percentage is persisted.
+ */
 async function saveUserSettingsHourlyRate() {
     var inputEl = document.getElementById("hourlyRateInput");
+    var savingsInputEl = document.getElementById("savingsPercentInput");
     var msgEl = document.getElementById("hourlyRateMsg");
-    if (!inputEl || !db || typeof db.collection !== "function") return;
-    var rate = parseFloat(inputEl.value);
-    if (isNaN(rate) || rate < 0) rate = 0;
+    if (!db || typeof db.collection !== "function") return;
+    var rate = currentHourlyRate;
+    if (inputEl) {
+        rate = parseFloat(inputEl.value);
+        if (isNaN(rate) || rate < 0) rate = 0;
+    }
+    var savingsPercent = currentSavingsPercent;
+    if (savingsInputEl) {
+        var raw = parseFloat(savingsInputEl.value);
+        if (!isNaN(raw) && raw >= 0) {
+            savingsPercent = raw > 100 ? 100 : raw;
+        }
+    }
     try {
-        await db.collection("user_settings").doc(USER_SETTINGS_HOURLY_DOC_ID).set({ hourlyRate: rate }, { merge: true });
+        await db.collection("user_settings").doc(USER_SETTINGS_HOURLY_DOC_ID).set(
+            { hourlyRate: rate, savingsPercent: savingsPercent },
+            { merge: true }
+        );
         currentHourlyRate = rate;
+        currentSavingsPercent = savingsPercent;
         if (msgEl) {
             msgEl.textContent = "Saved.";
             msgEl.className = "hourly-msg success";
         }
+        loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions after save preference:", e); });
     } catch (err) {
         console.warn("saveUserSettingsHourlyRate error:", err);
         if (msgEl) {
@@ -1341,6 +1509,38 @@ async function saveUserSettingsHourlyRate() {
     }
 }
 
+/**
+ * Returns sum of earnings from work_sessions for today (local date).
+ * Used by dashboard "Today's Breakdown".
+ */
+async function getTodayEarningsFromFirestore() {
+    if (!db || typeof db.collection !== "function") return 0;
+    try {
+        var now = new Date();
+        var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        var todayEnd = todayStart + 24 * 60 * 60 * 1000 - 1;
+        var snapshot = await db.collection("work_sessions").get();
+        var total = 0;
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var startTime = data && data.startTime;
+            var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
+            if (ts >= todayStart && ts <= todayEnd && data.earning != null && !isNaN(Number(data.earning))) {
+                total += Number(data.earning);
+            }
+        });
+        return Math.round(total * 100) / 100;
+    } catch (err) {
+        console.warn("getTodayEarningsFromFirestore error:", err);
+        return 0;
+    }
+}
+
+/**
+ * Loads work sessions, updates Today/Week/Pacing/Smart savings, and tries to resume an active session.
+ * Called on: page load, stop work (save session), save preference (savings %), switch to Hourly page.
+ */
 async function loadWorkSessions() {
     var listEl = document.getElementById("workSessionsList");
     if (!listEl) return;
@@ -1363,14 +1563,16 @@ async function loadWorkSessions() {
                         breakMinutes += (endMs - startMs) / 60000;
                     });
                 }
-                var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : (data.endTime && data.endTime.toDate ? data.endTime.toDate().getTime() : 0);
-                var dateLabel = formatSessionDate(startTime || data.endTime);
+                var endTime = data && data.endTime;
+                var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : (endTime && endTime.toDate ? endTime.toDate().getTime() : 0);
+                var dateLabel = formatSessionDate(startTime || endTime);
                 var durationLabel = formatMinutesAsHoursMinutes(totalMinutes);
                 var breakLabel = breakMinutes <= 0 ? "0 min" : (breakMinutes >= 60 ? formatMinutesAsHoursMinutes(breakMinutes) : Math.round(breakMinutes) + " min");
                 var earning = data && (data.earning != null) ? Number(data.earning) : null;
                 if (earning != null && isNaN(earning)) earning = null;
                 var mins = totalMinutes != null && !isNaN(Number(totalMinutes)) ? Number(totalMinutes) : 0;
-                sessions.push({ id: doc.id, dateLabel: dateLabel, durationLabel: durationLabel, breakLabel: breakLabel, earning: earning, sortKey: ts, totalMinutes: mins });
+                var breakMins = breakMinutes;
+                sessions.push({ id: doc.id, dateLabel: dateLabel, durationLabel: durationLabel, breakLabel: breakLabel, breakMinutes: breakMins, earning: earning, sortKey: ts, totalMinutes: mins, startTime: startTime, endTime: endTime });
             });
             sessions.sort(function(a, b) {
                 return (b.sortKey || 0) - (a.sortKey || 0);
@@ -1390,6 +1592,47 @@ async function loadWorkSessions() {
     });
     var todayEl = document.getElementById("todayEarningDisplay");
     if (todayEl) todayEl.textContent = "Today: £" + todayTotal.toFixed(2);
+    var savingsPercent = (typeof currentSavingsPercent === "number" && !isNaN(currentSavingsPercent)) ? currentSavingsPercent : 0;
+    var suggestedSavings = Math.round(todayTotal * (savingsPercent / 100) * 100) / 100;
+    var suggestedEl = document.getElementById("suggestedSavingsDisplay");
+    if (suggestedEl) suggestedEl.textContent = "Suggested to save today £" + suggestedSavings.toFixed(2);
+    var currentMonthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    var monthlyExpensesTotal = 0;
+    var monthlyBillsOnlyHourly = 0;
+    if (Array.isArray(expenses)) {
+        expenses.forEach(function(e) {
+            if (!e || !e.date || typeof e.date !== "string" || !e.date.startsWith(currentMonthStr) || e.type !== "bill") return;
+            if (typeof e.amount === "number" && !isNaN(e.amount)) monthlyBillsOnlyHourly += e.amount;
+        });
+    }
+    var recurringTotalHourly = 0;
+    try {
+        recurringTotalHourly = await getRecurringBillsTotal();
+    } catch (e) { console.warn("getRecurringBillsTotal in loadWorkSessions:", e); }
+    var dailyBills = (monthlyBillsOnlyHourly / 30) + (recurringTotalHourly / 30);
+    var safeToSpend = Math.round((todayTotal - dailyBills - suggestedSavings) * 100) / 100;
+    var safeToSpendEl = document.getElementById("safeToSpendDisplay");
+    if (safeToSpendEl) safeToSpendEl.textContent = "Safe to spend today £" + safeToSpend.toFixed(2);
+    var safeToSpendMsgEl = document.getElementById("safeToSpendSmartMessage");
+    if (safeToSpendMsgEl) {
+        if (safeToSpend < 0) {
+            safeToSpendMsgEl.textContent = "Today is tight — consider reducing spending or working more hours.";
+        } else if (safeToSpend <= 30) {
+            safeToSpendMsgEl.textContent = "You can spend a little today, but keep it light.";
+        } else {
+            safeToSpendMsgEl.textContent = "You're in a good position today — spend mindfully.";
+        }
+    }
+    var smartMsgEl = document.getElementById("smartSavingsMessage");
+    if (smartMsgEl) {
+        if (todayTotal === 0) {
+            smartMsgEl.textContent = "Log your work hours to see saving suggestion.";
+        } else if (todayTotal > 0 && todayTotal < 50) {
+            smartMsgEl.textContent = "Small wins add up. Saving a little today keeps you consistent.";
+        } else {
+            smartMsgEl.textContent = "Great work today — locking in saving now builds long term wealth.";
+        }
+    }
     var weekStartDate = new Date(now);
     weekStartDate.setDate(now.getDate() - ((now.getDay() + 6) % 7));
     weekStartDate.setHours(0, 0, 0, 0);
@@ -1430,9 +1673,10 @@ async function loadWorkSessions() {
     var calendarDays = Math.max(1, Math.round((rangeEnd - rangeStart) / (24 * 60 * 60 * 1000)) + 1);
     var avgHoursPerDay = calendarDays > 0 ? totalHoursAll / calendarDays : 0;
     var dayProj = Math.round(avgHoursPerDay * effectiveRate * 100) / 100;
-    var weekProj = Math.round(7 * avgHoursPerDay * effectiveRate * 100) / 100;
-    var daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    var monthProj = Math.round(daysInMonth * avgHoursPerDay * effectiveRate * 100) / 100;
+    var workingDaysPerWeek = 5;
+    var weekProj = Math.round(workingDaysPerWeek * avgHoursPerDay * effectiveRate * 100) / 100;
+    var workingDaysInMonth = getWorkingDaysInCurrentMonth(now);
+    var monthProj = Math.round(workingDaysInMonth * avgHoursPerDay * effectiveRate * 100) / 100;
     var pacingEl = document.getElementById("pacingDisplay");
     if (pacingEl) {
         pacingEl.textContent = "If you keep this pace: £" + dayProj.toFixed(2) + " today, £" + weekProj.toFixed(2) + " week, £" + monthProj.toFixed(2) + " month";
@@ -1449,6 +1693,19 @@ async function loadWorkSessions() {
         textSpan.className = "work-session-item-text";
         textSpan.textContent = s.dateLabel + " — Break: " + breakLabel + " — Hours worked: " + s.durationLabel + " — " + earningStr;
         li.appendChild(textSpan);
+        var editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "work-session-edit-btn";
+        editBtn.textContent = "Edit";
+        editBtn.setAttribute("aria-label", "Edit session");
+        editBtn.dataset.sessionId = s.id || "";
+        editBtn.addEventListener("click", function(ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            var id = editBtn.dataset.sessionId;
+            if (id) openEditWorkSessionModal(id, s.totalMinutes, s.breakMinutes, s.startTime, s.endTime);
+        });
+        li.appendChild(editBtn);
         var delBtn = document.createElement("button");
         delBtn.type = "button";
         delBtn.className = "work-session-delete-btn";
@@ -1463,13 +1720,60 @@ async function loadWorkSessions() {
         });
         li.appendChild(delBtn);
         li.addEventListener("click", function(ev) {
-            if (ev.target === delBtn) return;
+            if (ev.target === delBtn || ev.target === editBtn) return;
             var items = listEl.querySelectorAll(".work-session-item");
             items.forEach(function(item) { item.classList.remove("selected"); });
             li.classList.add("selected");
         });
         listEl.appendChild(li);
     });
+
+    await tryResumeActiveWorkSession();
+}
+
+/**
+ * If there is an active work session in Firestore (startTime, no endTime), restore it
+ * so the timer continues counting instead of resetting to zero on page load.
+ */
+async function tryResumeActiveWorkSession() {
+    if (hourlySessionDocId != null || !db || typeof db.collection !== "function") return;
+    try {
+        var snapshot = await db.collection("work_sessions").orderBy("startTime", "desc").limit(1).get();
+        if (snapshot.empty) return;
+        var doc = snapshot.docs[0];
+        var data = doc.data();
+        if (data.endTime != null) return;
+        var startTime = data.startTime;
+        var startMs = startTime && startTime.toDate ? startTime.toDate().getTime() : Date.now();
+        hourlySessionDocId = doc.id;
+        hourlySessionStartTime = startMs;
+        hourlySessionPausedAt = null;
+        var timerEl = document.getElementById("hourlyTimerDisplay");
+        var startBtn = document.getElementById("startWorkBtn");
+        var breakEntryWrap = document.getElementById("breakEntryWrap");
+        if (hourlyTimerIntervalId != null) {
+            clearInterval(hourlyTimerIntervalId);
+            hourlyTimerIntervalId = null;
+        }
+        if (startBtn) {
+            startBtn.textContent = "Stop work";
+            startBtn.classList.add("start-work-btn-stop");
+        }
+        if (breakEntryWrap) breakEntryWrap.style.display = "none";
+        var actionsWrap = startBtn && startBtn.closest(".hourly-tracker-actions");
+        if (actionsWrap) actionsWrap.style.display = "";
+        if (timerEl) {
+            var elapsedSec = (Date.now() - hourlySessionStartTime) / 1000;
+            timerEl.textContent = formatElapsedHMS(elapsedSec);
+        }
+        hourlyTimerIntervalId = setInterval(function() {
+            if (hourlySessionStartTime == null || hourlySessionPausedAt != null || !timerEl) return;
+            var elapsed = (Date.now() - hourlySessionStartTime) / 1000;
+            timerEl.textContent = formatElapsedHMS(elapsed);
+        }, 1000);
+    } catch (err) {
+        console.warn("tryResumeActiveWorkSession error:", err);
+    }
 }
 
 async function deleteWorkSession(sessionId) {
@@ -1479,6 +1783,100 @@ async function deleteWorkSession(sessionId) {
         loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions after delete:", e); });
     } catch (err) {
         console.error("Delete work session error:", err);
+    }
+}
+
+function openEditWorkSessionModal(sessionId, currentTotalMinutes, currentBreakMinutes, startTime, endTime) {
+    var modal = document.getElementById("editWorkSessionModal");
+    var startEl = document.getElementById("editWorkSessionStartInput");
+    var finishEl = document.getElementById("editWorkSessionFinishInput");
+    var breakHoursEl = document.getElementById("editWorkSessionBreakHoursInput");
+    var breakMinutesEl = document.getElementById("editWorkSessionBreakMinutesInput");
+    var totalDisplayEl = document.getElementById("editWorkSessionTotalDisplay");
+    var msgEl = document.getElementById("editWorkSessionMsg");
+    if (!modal || !startEl || !finishEl) return;
+    modal.dataset.editSessionId = sessionId || "";
+    var startStr = formatToDatetimeLocal(startTime);
+    var endStr = formatToDatetimeLocal(endTime);
+    if (!endStr && startStr) {
+        var total = (currentTotalMinutes != null && !isNaN(Number(currentTotalMinutes)) && Number(currentTotalMinutes) >= 0) ? Number(currentTotalMinutes) : 0;
+        var breakTotal = (currentBreakMinutes != null && !isNaN(Number(currentBreakMinutes)) && Number(currentBreakMinutes) >= 0) ? Number(currentBreakMinutes) : 0;
+        var elapsed = total + breakTotal;
+        var startDate = startTime && startTime.toDate ? startTime.toDate() : new Date(startStr);
+        var finishDate = new Date(startDate.getTime() + elapsed * 60000);
+        endStr = formatToDatetimeLocal(finishDate);
+    }
+    startEl.value = startStr || "";
+    finishEl.value = endStr || "";
+    var breakTotal = (currentBreakMinutes != null && !isNaN(Number(currentBreakMinutes)) && Number(currentBreakMinutes) >= 0) ? Number(currentBreakMinutes) : 0;
+    var bh = Math.floor(breakTotal / 60);
+    var bm = Math.round(breakTotal - bh * 60);
+    if (bm >= 60) { bm = 0; bh += 1; }
+    if (breakHoursEl) breakHoursEl.value = String(bh);
+    if (breakMinutesEl) breakMinutesEl.value = String(bm);
+    if (msgEl) msgEl.textContent = "";
+    updateEditWorkSessionTotalDisplay();
+    modal.classList.add("show");
+    modal.setAttribute("aria-hidden", "false");
+    startEl.focus();
+}
+
+function updateEditWorkSessionTotalDisplay() {
+    var startEl = document.getElementById("editWorkSessionStartInput");
+    var finishEl = document.getElementById("editWorkSessionFinishInput");
+    var breakHoursEl = document.getElementById("editWorkSessionBreakHoursInput");
+    var breakMinutesEl = document.getElementById("editWorkSessionBreakMinutesInput");
+    var totalDisplayEl = document.getElementById("editWorkSessionTotalDisplay");
+    if (!totalDisplayEl) return;
+    var s = startEl ? startEl.value : "";
+    var f = finishEl ? finishEl.value : "";
+    var startMs = s ? new Date(s).getTime() : NaN;
+    var finishMs = f ? new Date(f).getTime() : NaN;
+    var breakH = breakHoursEl ? parseFloat(breakHoursEl.value) : 0;
+    var breakM = breakMinutesEl ? parseFloat(breakMinutesEl.value) : 0;
+    if (isNaN(breakH)) breakH = 0;
+    if (isNaN(breakM)) breakM = 0;
+    if (breakM >= 60) breakM = 59;
+    var breakMinutesTotal = breakH * 60 + breakM;
+    if (!isNaN(startMs) && !isNaN(finishMs) && finishMs >= startMs) {
+        var elapsedMinutes = (finishMs - startMs) / 60000;
+        var worked = Math.max(0, elapsedMinutes - breakMinutesTotal);
+        totalDisplayEl.textContent = formatMinutesAsHoursMinutes(worked);
+    } else {
+        totalDisplayEl.textContent = "0h 0m";
+    }
+}
+
+function closeEditWorkSessionModal() {
+    var modal = document.getElementById("editWorkSessionModal");
+    if (!modal) return;
+    modal.classList.remove("show");
+    modal.setAttribute("aria-hidden", "true");
+    modal.dataset.editSessionId = "";
+}
+
+async function updateWorkSessionTime(sessionId, totalMinutes, breakMinutes, startDate, endDate) {
+    if (!sessionId || !db || typeof db.collection !== "function") return false;
+    var mins = parseFloat(totalMinutes);
+    if (isNaN(mins) || mins < 0) mins = 0;
+    var totalMinutesRounded = Math.round(mins * 100) / 100;
+    var breakMins = (breakMinutes != null && !isNaN(Number(breakMinutes)) && Number(breakMinutes) >= 0)
+        ? Number(breakMinutes) : 0;
+    breakMins = Math.round(breakMins * 100) / 100;
+    var hourlyRate = (typeof currentHourlyRate === "number" && !isNaN(currentHourlyRate)) ? currentHourlyRate : 0;
+    var earning = Math.round((totalMinutesRounded / 60) * hourlyRate * 100) / 100;
+    var payload = { totalMinutes: totalMinutesRounded, hourlyRate: hourlyRate, earning: earning };
+    if (breakMins >= 0) payload.breakMinutes = breakMins;
+    if (startDate && endDate && !isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+        payload.startTime = firebase.firestore.Timestamp.fromDate(startDate);
+        payload.endTime = firebase.firestore.Timestamp.fromDate(endDate);
+    }
+    try {
+        await db.collection("work_sessions").doc(sessionId).update(payload);
+        return true;
+    } catch (err) {
+        console.error("updateWorkSessionTime error:", err);
+        return false;
     }
 }
 
@@ -1508,13 +1906,13 @@ function setupHourlyTrackerListener(elements) {
     var cancelBreakEntryBtn = document.getElementById("cancelBreakEntryBtn");
     if (!startBtn) return;
 
-    var saveRateBtn = document.getElementById("saveHourlyRateBtn");
-    if (saveRateBtn) {
-        saveRateBtn.addEventListener("click", function() {
+    var savePreferenceBtn = document.getElementById("savePreferenceBtn");
+    if (savePreferenceBtn) {
+        savePreferenceBtn.addEventListener("click", function() {
             var msgEl2 = document.getElementById("hourlyRateMsg");
             if (msgEl2) { msgEl2.textContent = ""; msgEl2.className = "hourly-msg"; }
             saveUserSettingsHourlyRate().then(function() {
-                if (msgEl2) setTimeout(function() { msgEl2.textContent = ""; }, 2000);
+                if (msgEl2) { msgEl2.textContent = "Preferences saved."; msgEl2.className = "hourly-msg success"; setTimeout(function() { if (msgEl2) msgEl2.textContent = ""; }, 2000); }
             });
         });
     }
@@ -1908,6 +2306,30 @@ function setupModalListeners() {
     if (saveBtn) {
         saveBtn.addEventListener("click", handleSaveEditedExpense);
     }
+
+    // Show/hide Bill schedule in edit modal when Type changes
+    var editTypeEl = document.getElementById("edit-type");
+    var editBillScheduleWrap = document.getElementById("editBillScheduleWrap");
+    if (editTypeEl && editBillScheduleWrap) {
+        editTypeEl.addEventListener("change", function() {
+            editBillScheduleWrap.classList.toggle("hidden", editTypeEl.value !== "bill");
+        });
+    }
+
+    // Edit work session modal (Hourly Tracker)
+    var closeEditWorkSessionBtn = document.getElementById("closeEditWorkSessionModal");
+    var cancelEditWorkSessionBtn = document.getElementById("cancelEditWorkSessionBtn");
+    var saveEditWorkSessionBtn = document.getElementById("saveEditWorkSessionBtn");
+    if (closeEditWorkSessionBtn) closeEditWorkSessionBtn.addEventListener("click", closeEditWorkSessionModal);
+    if (cancelEditWorkSessionBtn) cancelEditWorkSessionBtn.addEventListener("click", closeEditWorkSessionModal);
+    if (saveEditWorkSessionBtn) saveEditWorkSessionBtn.addEventListener("click", handleSaveEditWorkSession);
+    ["editWorkSessionStartInput", "editWorkSessionFinishInput", "editWorkSessionBreakHoursInput", "editWorkSessionBreakMinutesInput"].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) {
+            el.addEventListener("input", updateEditWorkSessionTotalDisplay);
+            el.addEventListener("change", updateEditWorkSessionTotalDisplay);
+        }
+    });
 }
 
 /**
@@ -1919,6 +2341,7 @@ function openEditModal(expense) {
     const dateInput = document.getElementById("edit-date");
     const notesInput = document.getElementById("edit-notes");
     const categoryInput = document.getElementById("edit-category");
+    const typeInput = document.getElementById("edit-type");
     const modal = document.getElementById("editModal");
     if (modal) {
         modal.classList.add("show");
@@ -1933,6 +2356,11 @@ function openEditModal(expense) {
     dateInput.value = expense.date || "";
     notesInput.value = expense.note || "";
     categoryInput.value = expense.category || "";
+    if (typeInput) typeInput.value = (expense.type === "bill" || expense.type === "spending") ? expense.type : "spending";
+    var editBillSched = document.getElementById("edit-billSchedule");
+    if (editBillSched) editBillSched.value = (expense.billSchedule === "recurring" || expense.billSchedule === "single") ? expense.billSchedule : "single";
+    var editBillScheduleWrap = document.getElementById("editBillScheduleWrap");
+    if (editBillScheduleWrap) editBillScheduleWrap.classList.toggle("hidden", (expense.type || "spending") !== "bill");
     modal.classList.add("show");
 }
 
@@ -1963,6 +2391,56 @@ function handleModalOutsideClick(event) {
     if (editModal && editModal.classList.contains("show") && event.target === editModal) {
         closeEditModal();
     }
+    var editWorkSessionModal = document.getElementById("editWorkSessionModal");
+    if (editWorkSessionModal && editWorkSessionModal.classList.contains("show") && event.target === editWorkSessionModal) {
+        closeEditWorkSessionModal();
+    }
+}
+
+async function handleSaveEditWorkSession() {
+    var modal = document.getElementById("editWorkSessionModal");
+    var startEl = document.getElementById("editWorkSessionStartInput");
+    var finishEl = document.getElementById("editWorkSessionFinishInput");
+    var breakHoursEl = document.getElementById("editWorkSessionBreakHoursInput");
+    var breakMinutesEl = document.getElementById("editWorkSessionBreakMinutesInput");
+    var msgEl = document.getElementById("editWorkSessionMsg");
+    if (!modal || !startEl || !finishEl) return;
+    var sessionId = modal.dataset.editSessionId;
+    if (!sessionId) return;
+    if (msgEl) { msgEl.textContent = ""; msgEl.className = "hourly-msg"; }
+    var startStr = startEl.value;
+    var finishStr = finishEl.value;
+    if (!startStr || !finishStr) {
+        if (msgEl) { msgEl.textContent = "Please select start and finish."; msgEl.className = "hourly-msg error"; }
+        return;
+    }
+    var startDate = new Date(startStr);
+    var finishDate = new Date(finishStr);
+    if (isNaN(startDate.getTime()) || isNaN(finishDate.getTime())) {
+        if (msgEl) { msgEl.textContent = "Invalid start or finish."; msgEl.className = "hourly-msg error"; }
+        return;
+    }
+    if (finishDate.getTime() <= startDate.getTime()) {
+        if (msgEl) { msgEl.textContent = "Finish must be after start."; msgEl.className = "hourly-msg error"; }
+        return;
+    }
+    var elapsedMinutes = (finishDate.getTime() - startDate.getTime()) / 60000;
+    var breakHours = breakHoursEl ? parseFloat(breakHoursEl.value) : 0;
+    var breakMinutes = breakMinutesEl ? parseFloat(breakMinutesEl.value) : 0;
+    if (isNaN(breakHours) || breakHours < 0) breakHours = 0;
+    if (isNaN(breakMinutes) || breakMinutes < 0) breakMinutes = 0;
+    if (breakMinutes >= 60) breakMinutes = 59;
+    var breakMinutesTotal = Math.round((breakHours * 60 + breakMinutes) * 100) / 100;
+    var totalMinutes = Math.round((elapsedMinutes - breakMinutesTotal) * 100) / 100;
+    if (totalMinutes < 0) totalMinutes = 0;
+    var ok = await updateWorkSessionTime(sessionId, totalMinutes, breakMinutesTotal, startDate, finishDate);
+    if (ok) {
+        closeEditWorkSessionModal();
+        loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions after edit:", e); });
+        if (msgEl) { msgEl.textContent = ""; }
+    } else {
+        if (msgEl) { msgEl.textContent = "Could not save. Try again."; msgEl.className = "hourly-msg error"; }
+    }
 }
 
 /**
@@ -1974,18 +2452,26 @@ async function handleSaveEditedExpense() {
     const dateInput = document.getElementById("edit-date");
     const notesInput = document.getElementById("edit-notes");
     const categoryInput = document.getElementById("edit-category");
+    const typeInput = document.getElementById("edit-type");
     
     if (!amountInput || !dateInput || !notesInput || !categoryInput) {
         console.error("Edit form elements not found");
         return;
     }
     
+    var editType = typeInput && typeInput.value;
+    if (editType !== "bill" && editType !== "spending") editType = "spending";
+    var editBillSchedEl = document.getElementById("edit-billSchedule");
+    var editBillSched = editBillSchedEl && editBillSchedEl.value;
+    if (editBillSched !== "recurring" && editBillSched !== "single") editBillSched = "single";
     // Extract edit form data
     const editData = {
         amount: Number(amountInput.value),
         date: dateInput.value,
         note: notesInput.value.trim(),
-        category: categoryInput.value
+        category: categoryInput.value,
+        type: editType,
+        billSchedule: editBillSched
     };
     
     // Validate edit data
@@ -2010,30 +2496,74 @@ async function handleSaveEditedExpense() {
         return;
     }
     
-    // Save updated expense (preserve Firestore ID)
+    var recurringBillIdToKeep = selectedExpense.recurringBillId || null;
+    var isRecurringBill = editData.type === "bill" && editData.billSchedule === "recurring";
+
+    // Sync recurring_bills: add, update, or remove
+    if (selectedExpense.id) {
+        const firebaseReady = await ensureFirebaseReady();
+        if (firebaseReady && db) {
+            try {
+                if (selectedExpense.recurringBillId && !isRecurringBill) {
+                    await db.collection("recurring_bills").doc(selectedExpense.recurringBillId).delete();
+                    recurringBillIdToKeep = null;
+                } else if (selectedExpense.recurringBillId && isRecurringBill) {
+                    await db.collection("recurring_bills").doc(selectedExpense.recurringBillId).update({
+                        amount: editData.amount,
+                        note: editData.note,
+                        name: editData.note
+                    });
+                } else if (!selectedExpense.recurringBillId && isRecurringBill) {
+                    var rbRef = await db.collection("recurring_bills").add({
+                        amount: editData.amount,
+                        note: editData.note,
+                        name: editData.note,
+                        expenseId: selectedExpense.id,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    recurringBillIdToKeep = rbRef.id;
+                }
+            } catch (rbErr) {
+                console.warn("Recurring bills sync:", rbErr);
+            }
+        }
+    }
+
+    // Save updated expense (preserve Firestore ID and recurringBillId)
     const updatedExpense = {
-        id: selectedExpense.id, // Preserve Firestore ID
+        id: selectedExpense.id,
         note: editData.note,
         amount: editData.amount,
         date: editData.date,
-        category: editData.category
+        category: editData.category,
+        type: editData.type,
+        billSchedule: editData.billSchedule,
+        recurringBillId: recurringBillIdToKeep || undefined
     };
-    
+
     expenses[expenseIndex] = updatedExpense;
     localStorage.setItem("expenses", JSON.stringify(expenses));
-    
-    // Update expense in Firestore if it has an ID
+
+    // Update expense in Firestore if it has an ID (date as Timestamp)
     if (updatedExpense.id) {
         const firebaseReady = await ensureFirebaseReady();
         if (firebaseReady && db) {
             try {
-                await db.collection("expenses").doc(updatedExpense.id).update({
+                var dateTs = editData.date
+                    ? firebase.firestore.Timestamp.fromDate(new Date(editData.date + "T12:00:00"))
+                    : null;
+                var updatePayload = {
                     amount: editData.amount,
                     category: editData.category,
                     note: editData.note,
-                    date: editData.date
-                });
+                    type: editData.type,
+                    billSchedule: (editData.type === "bill" && (editData.billSchedule === "recurring" || editData.billSchedule === "single")) ? editData.billSchedule : "single",
+                    recurringBillId: recurringBillIdToKeep !== null ? recurringBillIdToKeep : firebase.firestore.FieldValue.delete()
+                };
+                if (dateTs) updatePayload.date = dateTs;
+                await db.collection("expenses").doc(updatedExpense.id).update(updatePayload);
                 console.log("✅ Expense updated in Firestore");
+                loadRecurringBills().catch(function(e) { console.warn("loadRecurringBills after edit:", e); });
             } catch (error) {
                 console.error("❌ Error updating expense in Firestore:", error);
                 console.error("Error code:", error.code);
@@ -2041,9 +2571,9 @@ async function handleSaveEditedExpense() {
             }
         }
     }
-    
+
     selectedExpense = null;
-    
+
     refreshAllDisplays();
     closeEditModal();
 }
@@ -2094,18 +2624,17 @@ function renderExpenses() {
     const totalAmount = document.getElementById("total");
 
     if (!emptyState || !totalAmount) return;
-    
-    // Show empty state if no expenses
+
     if (expenses.length === 0) {
         emptyState.style.display = "block";
-            expenseList.innerHTML = "";
+        expenseList.innerHTML = "";
         totalAmount.textContent = "Total: £0.00";
-            return;
-        } 
-    
-            emptyState.style.display = "none";
-        
-    // Group expenses by month and render
+        return;
+    }
+
+    emptyState.style.display = "none";
+
+    // Group expenses by month and render (recurring bills shown so user can delete them)
     const grouped = groupExpensesByMonth();
 
     const activeMonthKey = getActiveMonthKeyFromFilter();
@@ -2296,6 +2825,22 @@ async function deleteExpense(index, monthKey) {
         selectedExpense = null;
     }
     
+    // Remove from recurring_bills: by recurringBillId and by expenseId (so it always disappears when expense is deleted)
+    if (db && typeof db.collection === "function") {
+        try {
+            if (expenseToDelete.recurringBillId) {
+                await db.collection("recurring_bills").doc(expenseToDelete.recurringBillId).delete();
+                console.log("✅ Recurring bill removed from Firestore");
+            }
+            var rbQuery = await db.collection("recurring_bills").where("expenseId", "==", expenseToDelete.id).get();
+            var deletePromises = [];
+            rbQuery.forEach(function(doc) { deletePromises.push(doc.ref.delete()); });
+            if (deletePromises.length) await Promise.all(deletePromises);
+        } catch (rbErr) {
+            console.warn("Could not delete recurring_bills doc:", rbErr);
+        }
+    }
+
     // Remove expense from Firestore if it has an ID
     if (expenseToDelete.id) {
         const firebaseReady = await ensureFirebaseReady();
@@ -2310,11 +2855,18 @@ async function deleteExpense(index, monthKey) {
             }
         }
     }
-    
+
     // Remove expense and save
     expenses.splice(realIndex, 1);
     localStorage.setItem("expenses", JSON.stringify(expenses));
-    
+
+    // Update Recurring bills section so UI reflects the deletion (await so list updates before full refresh)
+    try {
+        await loadRecurringBills();
+    } catch (e) {
+        console.warn("loadRecurringBills after delete:", e);
+    }
+
     refreshAllDisplays();
 }
 
@@ -2336,20 +2888,35 @@ async function getTotalIncome() {
     }
 }
 
+function isRecurringBill(exp) {
+    return exp && exp.type === "bill" && exp.billSchedule === "recurring";
+}
+
 async function getTotalExpenses() {
-    if (!db || typeof db.collection !== "function") return 0;
-    try {
-        const snapshot = await db.collection("expenses").get();
-        let total = 0;
-        snapshot.forEach(function(doc) {
-            const data = doc.data();
-            total += Number(data.amount) || 0;
-        });
-        return total;
-    } catch (err) {
-        console.warn("getTotalExpenses error:", err);
-        return 0;
+    if (db && typeof db.collection === "function") {
+        try {
+            const snapshot = await db.collection("expenses").get();
+            let total = 0;
+            snapshot.forEach(function(doc) {
+                const data = doc.data();
+                if (data.type === "bill" && data.billSchedule === "recurring") return; // Exclude recurring; they're in Recurring bills section
+                total += Number(data.amount) || 0;
+            });
+            return total;
+        } catch (err) {
+            console.warn("getTotalExpenses error:", err);
+        }
     }
+    // Fallback: use global expenses, excluding recurring bills
+    var sum = 0;
+    if (Array.isArray(expenses)) {
+        for (var i = 0; i < expenses.length; i++) {
+            var e = expenses[i];
+            if (isRecurringBill(e)) continue;
+            if (e && typeof e.amount === "number" && !isNaN(e.amount)) sum += e.amount;
+        }
+    }
+    return sum;
 }
 
 async function updateTotalExpenses() {
@@ -2369,18 +2936,53 @@ async function updateTotalExpenses() {
 }
 
 async function loadSummary() {
+    var income = 0;
+    var expensesTotal = 0;
     try {
-        const income = await getTotalIncome();
-        const expenses = await getTotalExpenses();
-        const netBalance = income - expenses;
-        const totalIncomeEl = document.getElementById("totalIncome");
-        const totalExpensesEl = document.getElementById("totalExpenses");
-        const netBalanceEl = document.getElementById("netBalance");
-        if (totalIncomeEl) totalIncomeEl.textContent = income.toFixed(2);
-        if (totalExpensesEl) totalExpensesEl.textContent = expenses.toFixed(2);
-        if (netBalanceEl) netBalanceEl.textContent = netBalance.toFixed(2);
+        income = await getTotalIncome();
+        expensesTotal = await getTotalExpenses();
     } catch (err) {
-        console.warn("loadSummary error:", err);
+        console.warn("loadSummary getTotals:", err);
+        // Use global expenses so Overview still shows something
+        if (Array.isArray(expenses)) {
+            for (var i = 0; i < expenses.length; i++) {
+                var e = expenses[i];
+                if (e && typeof e.amount === "number" && !isNaN(e.amount)) expensesTotal += e.amount;
+            }
+        }
+    }
+    var netBalance = income - expensesTotal;
+    var totalIncomeEl = document.getElementById("totalIncome");
+    var totalExpensesEl = document.getElementById("totalExpenses");
+    var netBalanceEl = document.getElementById("netBalance");
+    if (totalIncomeEl) totalIncomeEl.textContent = income.toFixed(2);
+    if (totalExpensesEl) totalExpensesEl.textContent = expensesTotal.toFixed(2);
+    if (netBalanceEl) netBalanceEl.textContent = netBalance.toFixed(2);
+    updateDashboard().catch(function(e) { console.warn("loadSummary updateDashboard:", e); });
+}
+
+/**
+ * Returns the sum of all recurring bills from Firestore (for daily bills calculation).
+ */
+async function getRecurringBillsTotal() {
+    if (!db || typeof db.collection !== "function") return 0;
+    try {
+        var snapshot = await db.collection("recurring_bills").get();
+        var total = 0;
+        var seenExpenseIds = Object.create(null);
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var expenseId = data && data.expenseId;
+            if (expenseId && seenExpenseIds[expenseId]) return;
+            if (expenseId) seenExpenseIds[expenseId] = true;
+            var amt = Number(data && data.amount);
+            if (!isNaN(amt)) total += amt;
+        });
+        return total;
+    } catch (err) {
+        console.warn("getRecurringBillsTotal error:", err);
+        return 0;
     }
 }
 
@@ -2390,12 +2992,16 @@ async function loadRecurringBills() {
     if (!totalEl) return;
     var total = 0;
     var items = [];
+    var seenExpenseIds = Object.create(null); // Dedupe by expenseId so same bill never shows twice
     if (db && typeof db.collection === "function") {
         try {
             var snapshot = await db.collection("recurring_bills").get();
             snapshot.forEach(function(doc) {
                 var data = doc.data();
                 if (data && data.init === true) return;
+                var expenseId = data && data.expenseId;
+                if (expenseId && seenExpenseIds[expenseId]) return; // Skip duplicate (same expense linked twice)
+                if (expenseId) seenExpenseIds[expenseId] = true;
                 var amt = Number(data && data.amount);
                 if (isNaN(amt)) amt = 0;
                 total += amt;
@@ -2474,17 +3080,9 @@ function groupExpensesByMonth() {
     const grouped = {};
     
     expenses.forEach(expense => {
-        // Validate expense structure
-        if (!expense || typeof expense !== 'object' || !expense.date) {
-            return; // Skip invalid expenses
-        }
-        
+        if (!expense || typeof expense !== 'object' || !expense.date) return;
         const key = getMonthKey(expense.date);
-        
-        if (!grouped[key]) {
-            grouped[key] = [];
-        }
-        
+        if (!grouped[key]) grouped[key] = [];
         grouped[key].push(expense);
     });
     
@@ -2545,15 +3143,12 @@ function calculateTotal() {
     const totalEl = document.getElementById("total");
     if (!totalEl) return;
     
-    // Safely calculate total, handling invalid amounts
-    const total = expenses.reduce((sum, exp) => {
-        if (!exp || typeof exp.amount !== 'number' || isNaN(exp.amount)) {
-            return sum; // Skip invalid expenses
-        }
-        return sum + exp.amount;
-    }, 0);
-    
-    totalEl.textContent = `Total: £${total.toFixed(2)}`;
+    var total = 0;
+    expenses.forEach(function(exp) {
+        if (isRecurringBill(exp)) return;
+        if (exp && typeof exp.amount === "number" && !isNaN(exp.amount)) total += exp.amount;
+    });
+    totalEl.textContent = "Total: £" + total.toFixed(2);
 }
 
 // ============================================================================
@@ -2576,6 +3171,55 @@ async function updateDashboard() {
     if (dashboardCards) {
         dashboardCards.classList.toggle("hidden", !hasExpenses);
     }
+
+    try {
+        var now = new Date();
+        var currentMonthStr = now.toISOString().slice(0, 7);
+        // Daily bills share: ONLY type "bill" (ignore "spending")
+        var monthlyBillsOnly = Array.isArray(expenses) ? expenses.filter(function(exp) {
+            if (!exp || !exp.date || typeof exp.date !== "string" || !exp.date.startsWith(currentMonthStr)) return false;
+            if (exp.type !== "bill") return false;
+            return true;
+        }) : [];
+        var totalBillsForBreakdown = monthlyBillsOnly.reduce(function(sum, e) {
+            if (!e || typeof e.amount !== "number" || isNaN(e.amount)) return sum;
+            return sum + e.amount;
+        }, 0);
+        var recurringTotal = await getRecurringBillsTotal();
+        var dailyBillsForBreakdown = (totalBillsForBreakdown / 30) + (recurringTotal / 30);
+        var todayEarnings = 0;
+        try {
+            todayEarnings = await getTodayEarningsFromFirestore();
+        } catch (e) {
+            console.warn("updateDashboard getTodayEarningsFromFirestore:", e);
+        }
+        var savingsPercent = (typeof currentSavingsPercent === "number" && !isNaN(currentSavingsPercent)) ? currentSavingsPercent : 0;
+        var suggestedSavingsBreakdown = Math.round(todayEarnings * (savingsPercent / 100) * 100) / 100;
+        var safeToSpendBreakdown = Math.round((todayEarnings - dailyBillsForBreakdown - suggestedSavingsBreakdown) * 100) / 100;
+        var breakdownEarnedEl = document.getElementById("breakdownEarnedToday");
+        var breakdownDailyBillsEl = document.getElementById("breakdownDailyBills");
+        var breakdownSuggestedEl = document.getElementById("breakdownSuggestedSave");
+        var breakdownSafeEl = document.getElementById("breakdownSafeToSpend");
+        if (breakdownEarnedEl) breakdownEarnedEl.textContent = todayEarnings.toFixed(2);
+        if (breakdownDailyBillsEl) breakdownDailyBillsEl.textContent = dailyBillsForBreakdown.toFixed(2);
+        if (breakdownSuggestedEl) breakdownSuggestedEl.textContent = suggestedSavingsBreakdown.toFixed(2);
+        if (breakdownSafeEl) breakdownSafeEl.textContent = safeToSpendBreakdown.toFixed(2);
+
+        var totalBillsThisMonthBreakdown = totalBillsForBreakdown + recurringTotal;
+        var totalSpendingThisMonthBreakdown = Array.isArray(expenses) ? expenses.filter(function(exp) {
+            return exp && exp.date && typeof exp.date === "string" && exp.date.startsWith(currentMonthStr) && exp.type === "spending";
+        }).reduce(function(sum, e) {
+            if (!e || typeof e.amount !== "number" || isNaN(e.amount)) return sum;
+            return sum + e.amount;
+        }, 0) : 0;
+        var monthlyOverviewBillsEl = document.getElementById("monthlyOverviewBills");
+        var monthlyOverviewSpendingEl = document.getElementById("monthlyOverviewSpending");
+        if (monthlyOverviewBillsEl) monthlyOverviewBillsEl.textContent = totalBillsThisMonthBreakdown.toFixed(2);
+        if (monthlyOverviewSpendingEl) monthlyOverviewSpendingEl.textContent = totalSpendingThisMonthBreakdown.toFixed(2);
+    } catch (e) {
+        console.warn("updateDashboard Today's Breakdown:", e);
+    }
+
     if (!hasExpenses) {
         return;
     }
@@ -2583,18 +3227,31 @@ async function updateDashboard() {
     const monthlyTotalEl = document.getElementById("MonthlyTotal");
     const topCategoryEl = document.getElementById("top-category");
     const averageExpenseEl = document.getElementById("average-expense");
+    const dailyBillsEl = document.getElementById("dailyBillsValue");
     
     if (!monthlyTotalEl || !topCategoryEl || !averageExpenseEl) {
         return;
     }
-    
-    const now = new Date();
-    const currentMonth = now.toISOString().slice(0, 7);
-    
-    const monthlyExpenses = expenses.filter(exp => 
-        exp && exp.date && typeof exp.date === 'string' && exp.date.startsWith(currentMonth)
+
+    var currentMonth = (typeof currentMonthStr !== "undefined") ? currentMonthStr : new Date().toISOString().slice(0, 7);
+    var nowForDashboard = new Date();
+
+    const monthlyExpenses = expenses.filter(exp =>
+        exp && exp.date && typeof exp.date === "string" && exp.date.startsWith(currentMonth) && !isRecurringBill(exp)
     );
-    
+
+    // Daily Bills card: only type "bill" this month + recurring (ignore spending)
+    var monthlyBillsForCard = expenses.filter(function(exp) {
+        return exp && exp.date && typeof exp.date === "string" && exp.date.startsWith(currentMonth) && exp.type === "bill";
+    });
+    var totalBillsFromExpenses = monthlyBillsForCard.reduce(function(sum, e) {
+        if (!e || typeof e.amount !== "number" || isNaN(e.amount)) return sum;
+        return sum + e.amount;
+    }, 0);
+    var recurringTotalForDashboard = await getRecurringBillsTotal();
+    var totalBillsThisMonth = totalBillsFromExpenses + recurringTotalForDashboard;
+    const dailyBills = totalBillsThisMonth / 30;
+
     const monthlyExpensesTotal = monthlyExpenses.reduce((sum, e) => {
         if (!e || typeof e.amount !== 'number' || isNaN(e.amount)) return sum;
         return sum + e.amount;
@@ -2612,8 +3269,9 @@ async function updateDashboard() {
     const biggestCategory = findTopCategory(monthlyExpenses);
     animateText(topCategoryEl, biggestCategory);
     
-    const avgDailySpend = calculateAverageDailySpend(monthlyExpenses, now);
+    const avgDailySpend = calculateAverageDailySpend(monthlyExpenses, nowForDashboard);
     animateValue(averageExpenseEl, avgDailySpend, "£");
+    if (dailyBillsEl) animateValue(dailyBillsEl, dailyBills, "£");
 }
 
 /**
@@ -2915,11 +3573,12 @@ function renderCategoryChart() {
         return;
     }
 
-    // Use active-month expenses (or all) for category breakdown
+    // Use active-month expenses (or all) for category breakdown; exclude recurring bills
     const activeMonthKey = getActiveMonthKeyFromFilter();
     const monthlyExpenses = expenses.filter(exp => {
         if (!exp || !exp.date || typeof exp.date !== 'string') return false;
-        if (!activeMonthKey) return true; // "all months"
+        if (isRecurringBill(exp)) return false;
+        if (!activeMonthKey) return true;
         return exp.date.slice(0, 7) === activeMonthKey;
     });
 
@@ -3127,7 +3786,7 @@ function getMonthlyTotals() {
         if (!expense || typeof expense !== 'object') {
             return; // Skip invalid expenses
         }
-        
+        if (isRecurringBill(expense)) return; // Recurring bills shown in Recurring bills section only
         if (!expense.date || typeof expense.date !== 'string') {
             return; // Skip expenses with invalid dates
         }
@@ -3221,3 +3880,5 @@ function formatMonthLabelFromRaw(monthStr) {
         return monthStr;
     }
 }
+
+

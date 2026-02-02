@@ -499,6 +499,102 @@ li.selected {
     overflow-y: auto;
 }
 
+/* Edit Work Session Modal */
+.edit-work-session-hint {
+    margin: 0 0 12px 0;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+#editWorkSessionModal .modal-content label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+    font-weight: 500;
+}
+#editWorkSessionModal #editWorkSessionStartInput,
+#editWorkSessionModal #editWorkSessionFinishInput {
+    width: 100%;
+    max-width: 220px;
+    padding: 10px 12px;
+    font-size: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+.edit-work-session-total-label {
+    margin: 12px 0 16px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.edit-work-session-total-value {
+    color: var(--primary-color);
+}
+.edit-work-session-break-label {
+    margin: 16px 0 8px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.edit-work-session-time-inputs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 24px;
+    align-items: flex-end;
+    margin-bottom: 16px;
+}
+.edit-work-session-field {
+    display: flex;
+    flex-direction: column;
+}
+.edit-work-session-field label {
+    margin-bottom: 4px;
+}
+#editWorkSessionModal #editWorkSessionBreakHoursInput,
+#editWorkSessionModal #editWorkSessionBreakMinutesInput {
+    width: 80px;
+    padding: 10px 12px;
+    font-size: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+.edit-work-session-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.save-edit-work-session-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--bg-primary);
+    background: var(--primary-color);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+.save-edit-work-session-btn:hover {
+    opacity: 0.95;
+}
+.cancel-edit-work-session-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+}
+.cancel-edit-work-session-btn:hover {
+    border-color: var(--text-primary);
+    color: var(--text-primary);
+}
+
 /* Onboarding Modal Styles */
 .onboarding-modal {
     z-index: 2000;
@@ -771,6 +867,21 @@ li.selected {
     opacity: 0.95;
 }
 
+.save-preference-btn {
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--bg-primary);
+    background: var(--primary-color);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.save-preference-btn:hover {
+    opacity: 0.95;
+}
+
 .hourly-tracker-actions {
     margin-top: 24px;
     margin-bottom: 16px;
@@ -1004,6 +1115,41 @@ li.selected {
     color: var(--text-secondary);
 }
 
+.smart-savings-box {
+    margin-top: 24px;
+    padding: 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.smart-savings-title {
+    margin: 0 0 12px 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.suggested-savings-text {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--primary-color);
+}
+.safe-to-spend-text {
+    margin: 8px 0 0 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.smart-savings-message {
+    margin: 12px 0 0 0;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    font-style: italic;
+    line-height: 1.4;
+}
+
 .work-sessions-section {
     margin-top: 28px;
     padding-top: 20px;
@@ -1041,9 +1187,30 @@ li.selected {
     border-bottom: none;
 }
 
-.work-session-item.selected .work-session-delete-btn {
+.work-session-item.selected .work-session-delete-btn,
+.work-session-item.selected .work-session-edit-btn {
     opacity: 1;
     pointer-events: auto;
+}
+
+.work-session-edit-btn {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.work-session-edit-btn:hover {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
 }
 
 .work-session-item-text {
@@ -1078,7 +1245,7 @@ li.selected {
 
 .dashboard-cards {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 16px;
 }
 
@@ -1118,6 +1285,30 @@ li.selected {
     display: none;
 }
 
+.todays-breakdown-section {
+    margin-top: 20px;
+    padding: 16px 20px;
+    background: var(--bg-card);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+.todays-breakdown-section h2 {
+    margin: 0 0 12px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.todays-breakdown-section p {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+.todays-breakdown-section p:last-child {
+    margin-bottom: 0;
+}
+
 .dashboard-summary {
     margin-top: 20px;
     padding: 16px 20px;
@@ -1143,6 +1334,37 @@ li.selected {
 
 .dashboard-summary p:last-child {
     margin-bottom: 0;
+}
+
+.monthly-overview-section {
+    margin-top: 20px;
+    padding: 16px 20px;
+    background: var(--bg-card);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.monthly-overview-section h2 {
+    margin: 0 0 12px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.monthly-overview-bills {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.monthly-overview-spending {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--text-secondary);
 }
 
 .recurring-bills {
@@ -1182,6 +1404,29 @@ li.selected {
 
 .recurring-bills-list:empty {
     display: none;
+}
+
+.bill-schedule-wrap {
+    margin-top: 10px;
+}
+.bill-schedule-wrap.hidden {
+    display: none;
+}
+.bill-schedule-wrap label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+.bill-schedule-wrap select {
+    width: 100%;
+    max-width: 280px;
+    padding: 8px 10px;
+    font-size: 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--text-primary);
 }
 
 .saving-goals {
@@ -1370,6 +1615,14 @@ li.selected {
 
 .dashboard-card:nth-child(3) {
     animation-delay: 0.3s;
+}
+.dashboard-card:nth-child(4) {
+    animation-delay: 0.4s;
+}
+.dashboard-card-hint {
+    margin: 6px 0 0 0;
+    font-size: 12px;
+    color: var(--text-secondary);
 }
 
 @keyframes slideInUp {
