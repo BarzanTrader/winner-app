@@ -1423,6 +1423,7 @@ function formatToDatetimeLocal(t) {
 
 /** Count Mon–Fri in the given month (1–5 = weekday). */
 function getWorkingDaysInCurrentMonth(date) {
+    if (!date || typeof date.getFullYear !== "function") return 0;
     var year = date.getFullYear();
     var month = date.getMonth();
     var first = new Date(year, month, 1);
@@ -3174,7 +3175,7 @@ async function updateDashboard() {
 
     try {
         var now = new Date();
-        var currentMonthStr = now.toISOString().slice(0, 7);
+        var currentMonthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
         // Daily bills share: ONLY type "bill" (ignore "spending")
         var monthlyBillsOnly = Array.isArray(expenses) ? expenses.filter(function(exp) {
             if (!exp || !exp.date || typeof exp.date !== "string" || !exp.date.startsWith(currentMonthStr)) return false;
@@ -3233,8 +3234,8 @@ async function updateDashboard() {
         return;
     }
 
-    var currentMonth = (typeof currentMonthStr !== "undefined") ? currentMonthStr : new Date().toISOString().slice(0, 7);
     var nowForDashboard = new Date();
+    var currentMonth = (typeof currentMonthStr !== "undefined") ? currentMonthStr : (nowForDashboard.getFullYear() + "-" + String(nowForDashboard.getMonth() + 1).padStart(2, "0"));
 
     const monthlyExpenses = expenses.filter(exp =>
         exp && exp.date && typeof exp.date === "string" && exp.date.startsWith(currentMonth) && !isRecurringBill(exp)
@@ -3840,10 +3841,10 @@ function getMonthlyTotals() {
  * @returns {string|null} 'YYYY-MM' for a specific month, or null for "all months"
  */
 function getActiveMonthKeyFromFilter() {
-    // Default to current month if no explicit selection
+    // Default to current month if no explicit selection (use local time for consistency)
     if (!selectedMonthFilter || selectedMonthFilter === "current") {
         const now = new Date();
-        return now.toISOString().slice(0, 7);
+        return now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
     }
 
     if (selectedMonthFilter === "all") {
