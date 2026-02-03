@@ -122,7 +122,8 @@ async function createBaseCollections() {
         return;
     }
     
-    const collections = ["users", "expenses", "hours", "income", "settings", "waitlist", "recurring_bills", "saving_goals", "work_sessions", "user_settings"];
+    // Collections to ensure exist (init doc added only if collection is empty). Includes "stocks" and "mortgages".
+    const collections = ["users", "expenses", "hours", "income", "settings", "waitlist", "recurring_bills", "saving_goals", "work_sessions", "user_settings", "stocks", "mortgages"];
     
     try {
         for (const collectionName of collections) {
@@ -402,9 +403,13 @@ function getDOMElements() {
         homeTab: document.getElementById("homeTab"),
         historyTab: document.getElementById("historyTab"),
         hourlyTab: document.getElementById("hourlyTab"),
+        stocksTab: document.getElementById("stocksTab"),
+        mortgageTab: document.getElementById("mortgageTab"),
         homePage: document.getElementById("homePage"),
         historyPage: document.getElementById("historyPage"),
         hourlyPage: document.getElementById("hourlyPage"),
+        stocksPage: document.getElementById("stocksPage"),
+        mortgagePage: document.getElementById("mortgagePage"),
         monthFilter: document.getElementById("monthFilter"),
         onboardingModal: document.getElementById("onboardingModal"),
         skipOnboardingBtn: document.getElementById("skipOnboarding"),
@@ -751,6 +756,491 @@ function setupEventListeners(elements) {
     setupMonthFilterListener(elements.monthFilter);
     setupExpenseSearchListener(elements.expenseSearchInput);
     setupHourlyTrackerListener(elements);
+    setupStocksListener();
+    setupMortgageListener();
+}
+
+// ============================================================================
+// STOCKS — Firestore collection "stocks": avgPrice (number), createdAt (timestamp), shares (number), ticker (string), userId (string)
+// Live prices via Yahoo Finance (CORS proxy)
+// ============================================================================
+var STOCKS_USER_ID = "user_1 ";
+var portfolioLoadId = 0;
+
+/** Fetch live price for one symbol via Yahoo chart API (fallback when quote API fails). Fails silently on CORS/network. */
+async function getLivePriceChart(symbol) {
+    var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(symbol) + "?interval=1d&range=1d";
+    var proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(url);
+    try {
+        var res = await fetch(proxyUrl, { method: "GET" });
+        if (!res.ok) return null;
+        var text = await res.text();
+        var json = JSON.parse(text);
+        var result = json && json.chart && json.chart.result && json.chart.result[0];
+        if (!result) return null;
+        var meta = result.meta || {};
+        var p = meta.regularMarketPrice != null ? meta.regularMarketPrice : (meta.chartPreviousClose != null ? meta.chartPreviousClose : null);
+        if (p == null && result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) {
+            var closes = result.indicators.quote[0].close;
+            for (var i = closes.length - 1; i >= 0; i--) { if (closes[i] != null) { p = closes[i]; break; } }
+        }
+        return p != null && !isNaN(Number(p)) ? Number(p) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+/** Fetch live prices for symbols from Yahoo Finance. Returns { SYMBOL: price (number) or null }. Fails silently on CORS/401/520 (e.g. file:// or strict tracking). */
+async function getLivePrices(symbols) {
+    if (!symbols || symbols.length === 0) return {};
+    var unique = symbols.filter(function(s, i, a) { return a.indexOf(s) === i && s; });
+    var symbolsStr = unique.join(",");
+    var url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + encodeURIComponent(symbolsStr);
+    var proxies = [
+        "https://api.allorigins.win/raw?url=" + encodeURIComponent(url),
+        "https://corsproxy.io/?" + encodeURIComponent(url)
+    ];
+    for (var p = 0; p < proxies.length; p++) {
+        try {
+            var res = await fetch(proxies[p], { method: "GET" });
+            if (!res.ok) continue;
+            var text = await res.text();
+            var json = null;
+            try { json = JSON.parse(text); } catch (parseErr) { continue; }
+            var result = (json && json.quoteResponse && json.quoteResponse.result) ? json.quoteResponse.result : [];
+            var out = {};
+            result.forEach(function(r) {
+                var sym = r && r.symbol ? String(r.symbol).toUpperCase() : null;
+                var price = (r && (r.regularMarketPrice != null)) ? r.regularMarketPrice : (r && (r.regularMarketPreviousClose != null)) ? r.regularMarketPreviousClose : null;
+                var num = price != null ? Number(price) : null;
+                if (sym) out[sym] = (num != null && !isNaN(num)) ? num : null;
+            });
+            if (Object.keys(out).length > 0) return out;
+        } catch (e) {
+            continue;
+        }
+    }
+    try {
+        var fallbackOut = {};
+        for (var i = 0; i < unique.length; i++) {
+            fallbackOut[unique[i]] = await getLivePriceChart(unique[i]);
+        }
+        return fallbackOut;
+    } catch (e) {
+        return {};
+    }
+}
+
+var stocksFormSubmitting = false;
+
+function setupStocksListener() {
+    if (window.__stocksListenerAttached) return;
+    var form = document.getElementById("stockForm");
+    var tickerInput = document.getElementById("stockTicker");
+    var sharesInput = document.getElementById("stockShares");
+    var avgPriceInput = document.getElementById("stockAvgPrice");
+    var msgEl = document.getElementById("stockFormMsg");
+    if (!form || !tickerInput || !sharesInput || !avgPriceInput) return;
+    window.__stocksListenerAttached = true;
+    form.addEventListener("submit", async function(e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (stocksFormSubmitting) return;
+        stocksFormSubmitting = true;
+        var submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+        if (msgEl) msgEl.textContent = "";
+        var ticker = String(tickerInput.value).trim().toUpperCase();
+        var shares = parseFloat(sharesInput.value);
+        var avgPrice = parseFloat(avgPriceInput.value);
+        if (!ticker) {
+            if (msgEl) msgEl.textContent = "Enter a ticker.";
+            stocksFormSubmitting = false;
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+        }
+        if (isNaN(shares) || shares <= 0) {
+            if (msgEl) msgEl.textContent = "Enter a valid number of shares.";
+            stocksFormSubmitting = false;
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+        }
+        if (isNaN(avgPrice) || avgPrice < 0) {
+            if (msgEl) msgEl.textContent = "Enter a valid average price.";
+            stocksFormSubmitting = false;
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+        }
+        if (msgEl) msgEl.textContent = "Saving…";
+        try {
+            await addPortfolioHolding({ ticker: ticker, shares: shares, avgPrice: avgPrice });
+            tickerInput.value = "";
+            sharesInput.value = "";
+            avgPriceInput.value = "";
+            if (msgEl) msgEl.textContent = "Added.";
+            await loadPortfolioFromFirestore();
+        } catch (err) {
+            console.error("Add stock failed:", err && err.code, err && err.message, err);
+            var msg = "Could not add. ";
+            if (err && (err.code === "permission-denied" || (err.message && err.message.toLowerCase().indexOf("permission") !== -1))) {
+                msg += "Firestore rules may be blocking writes. Check Firebase Console → Firestore → Rules and allow read, write for 'stocks'.";
+            } else if (err && err.message) {
+                msg += err.message;
+            } else {
+                msg += "Check connection and try again.";
+            }
+            if (msgEl) msgEl.textContent = msg;
+        } finally {
+            stocksFormSubmitting = false;
+            if (submitBtn) submitBtn.disabled = false;
+        }
+    });
+}
+
+async function addPortfolioHolding(holding) {
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") {
+        throw new Error("Firebase not ready. Reload the page and try again.");
+    }
+    var col = db.collection("stocks");
+    var ticker = String(holding.ticker);
+    var shares = Number(holding.shares);
+    var avgPrice = Number(holding.avgPrice);
+    var cutoffMs = Date.now() - 8000;
+    var recentSnap = await col.orderBy("createdAt", "desc").limit(20).get();
+    for (var i = 0; i < recentSnap.docs.length; i++) {
+        var doc = recentSnap.docs[i];
+        var d = doc.data();
+        var createdMs = d.createdAt && d.createdAt.toDate ? d.createdAt.toDate().getTime() : 0;
+        if (createdMs >= cutoffMs && d.ticker === ticker && String(d.userId).trim() === STOCKS_USER_ID.trim() && Number(d.shares) === shares && Number(d.avgPrice) === avgPrice) {
+            return doc.ref;
+        }
+    }
+    var docRef = await col.add({
+        ticker: ticker,
+        shares: shares,
+        avgPrice: avgPrice,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        userId: String(STOCKS_USER_ID)
+    });
+    console.log("Stock added to Firestore, doc id:", docRef.id);
+    return docRef;
+}
+
+async function loadPortfolioFromFirestore() {
+    var listEl = document.getElementById("portfolioList");
+    var emptyEl = document.getElementById("portfolioEmpty");
+    if (!listEl) return;
+    var thisLoadId = ++portfolioLoadId;
+    listEl.innerHTML = "";
+    if (emptyEl) emptyEl.style.display = "block";
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") return;
+    try {
+        var snapshot = await db.collection("stocks").orderBy("createdAt", "desc").get();
+        if (thisLoadId !== portfolioLoadId) return;
+        var items = [];
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var docUserId = (data && data.userId != null) ? String(data.userId).trim() : "";
+            if (docUserId && docUserId !== STOCKS_USER_ID.trim()) return;
+            var ticker = (data && data.ticker) ? String(data.ticker).toUpperCase() : "—";
+            var shares = Number(data && data.shares);
+            var avgPrice = Number(data && data.avgPrice);
+            if (isNaN(shares)) shares = 0;
+            if (isNaN(avgPrice)) avgPrice = 0;
+            items.push({ id: doc.id, ticker: ticker, shares: shares, avgPrice: avgPrice });
+        });
+        var tickers = items.map(function(i) { return i.ticker; });
+        var livePrices = await getLivePrices(tickers);
+        if (thisLoadId !== portfolioLoadId) return;
+        items.forEach(function(item) {
+            var livePrice = livePrices[item.ticker] != null ? livePrices[item.ticker] : null;
+            var currentValue = item.shares * (livePrice != null ? livePrice : item.avgPrice);
+            var costBasis = item.shares * item.avgPrice;
+            item.livePrice = livePrice;
+            item.currentValue = currentValue;
+            item.profitLoss = currentValue - costBasis;
+        });
+        items.forEach(function(item) {
+            var li = document.createElement("li");
+            li.className = "portfolio-item";
+            var details = document.createElement("div");
+            details.className = "portfolio-item-details";
+            var strong = document.createElement("strong");
+            strong.textContent = item.ticker;
+            details.appendChild(strong);
+            var line1 = document.createElement("div");
+            line1.className = "portfolio-item-line";
+            line1.textContent = "Shares: " + item.shares + " · Avg: £" + item.avgPrice.toFixed(2) + (item.livePrice != null ? " · Live: £" + item.livePrice.toFixed(2) : " · Live: —");
+            details.appendChild(line1);
+            var line2 = document.createElement("div");
+            line2.className = "portfolio-item-line";
+            line2.appendChild(document.createTextNode("Value: £" + item.currentValue.toFixed(2) + " · "));
+            var plSpan = document.createElement("span");
+            plSpan.className = item.profitLoss >= 0 ? "portfolio-pl positive" : "portfolio-pl negative";
+            plSpan.textContent = (item.profitLoss >= 0 ? "+" : "") + "£" + item.profitLoss.toFixed(2);
+            line2.appendChild(plSpan);
+            details.appendChild(line2);
+            li.appendChild(details);
+            var editBtn = document.createElement("button");
+            editBtn.type = "button";
+            editBtn.className = "portfolio-edit-btn";
+            editBtn.setAttribute("aria-label", "Edit " + item.ticker);
+            editBtn.textContent = "Edit";
+            editBtn.dataset.id = item.id;
+            editBtn.dataset.ticker = item.ticker;
+            editBtn.dataset.shares = String(item.shares);
+            editBtn.dataset.avgPrice = String(item.avgPrice);
+            editBtn.addEventListener("click", function() {
+                openEditStockModal(editBtn.dataset.id, editBtn.dataset.ticker, editBtn.dataset.shares, editBtn.dataset.avgPrice);
+            });
+            li.appendChild(editBtn);
+            var delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.className = "portfolio-delete-btn";
+            delBtn.setAttribute("aria-label", "Remove " + item.ticker);
+            delBtn.textContent = "Remove";
+            delBtn.dataset.id = item.id;
+            delBtn.addEventListener("click", async function() {
+                var id = delBtn.dataset.id;
+                if (!id) return;
+                var ready = await ensureFirebaseReady();
+                if (!ready || !db || typeof db.collection !== "function") return;
+                try {
+                    await db.collection("stocks").doc(id).delete();
+                    await loadPortfolioFromFirestore();
+                } catch (e) {
+                    console.warn("stocks delete:", e);
+                }
+            });
+            li.appendChild(delBtn);
+            listEl.appendChild(li);
+        });
+        if (emptyEl) emptyEl.style.display = items.length > 0 ? "none" : "block";
+    } catch (err) {
+        console.warn("loadPortfolioFromFirestore:", err);
+    }
+}
+
+function openEditStockModal(docId, ticker, shares, avgPrice) {
+    var modal = document.getElementById("editStockModal");
+    var tickerEl = document.getElementById("editStockTicker");
+    var sharesEl = document.getElementById("editStockShares");
+    var avgPriceEl = document.getElementById("editStockAvgPrice");
+    var msgEl = document.getElementById("editStockMsg");
+    if (!modal || !tickerEl || !sharesEl || !avgPriceEl) return;
+    modal.dataset.editStockId = docId || "";
+    tickerEl.value = ticker || "";
+    sharesEl.value = shares != null ? String(shares) : "";
+    avgPriceEl.value = avgPrice != null ? String(avgPrice) : "";
+    if (msgEl) msgEl.textContent = "";
+    modal.classList.add("show");
+    modal.setAttribute("aria-hidden", "false");
+}
+
+function closeEditStockModal() {
+    var modal = document.getElementById("editStockModal");
+    if (modal) {
+        delete modal.dataset.editStockId;
+        modal.classList.remove("show");
+        modal.setAttribute("aria-hidden", "true");
+    }
+    var msgEl = document.getElementById("editStockMsg");
+    if (msgEl) msgEl.textContent = "";
+}
+
+async function handleSaveEditStock() {
+    var modal = document.getElementById("editStockModal");
+    var docId = modal && modal.dataset.editStockId;
+    var tickerEl = document.getElementById("editStockTicker");
+    var sharesEl = document.getElementById("editStockShares");
+    var avgPriceEl = document.getElementById("editStockAvgPrice");
+    var msgEl = document.getElementById("editStockMsg");
+    if (!docId || !tickerEl || !sharesEl || !avgPriceEl) {
+        if (msgEl) msgEl.textContent = "Cannot save.";
+        return;
+    }
+    var ticker = String(tickerEl.value).trim().toUpperCase();
+    var shares = parseFloat(sharesEl.value);
+    var avgPrice = parseFloat(avgPriceEl.value);
+    if (!ticker) {
+        if (msgEl) msgEl.textContent = "Enter a ticker.";
+        return;
+    }
+    if (isNaN(shares) || shares <= 0) {
+        if (msgEl) msgEl.textContent = "Enter a valid number of shares.";
+        return;
+    }
+    if (isNaN(avgPrice) || avgPrice < 0) {
+        if (msgEl) msgEl.textContent = "Enter a valid average price.";
+        return;
+    }
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") {
+        if (msgEl) msgEl.textContent = "Connection not ready. Try again.";
+        return;
+    }
+    if (msgEl) msgEl.textContent = "Saving…";
+    try {
+        await db.collection("stocks").doc(docId).update({
+            ticker: ticker,
+            shares: shares,
+            avgPrice: avgPrice
+        });
+        closeEditStockModal();
+        await loadPortfolioFromFirestore();
+    } catch (err) {
+        console.warn("stocks update:", err);
+        if (msgEl) msgEl.textContent = "Could not save. Try again.";
+    }
+}
+
+// ============================================================================
+// MORTGAGE TRACKER — Firestore collection "mortgages": userId, propertyName,
+// loanAmount, interestRate, termYears, monthlyPayment, remainingBalance, startDate
+// (Uses same compat Firestore as rest of app to avoid breaking existing features.)
+// ============================================================================
+var MORTGAGE_USER_ID = "user_1 ";
+
+function setupMortgageListener() {
+    var form = document.getElementById("mortgageForm");
+    var msgEl = document.getElementById("mortgageFormMsg");
+    if (!form) return;
+    if (form.dataset.mortgageListenerAttached === "true") return;
+    form.dataset.mortgageListenerAttached = "true";
+    form.addEventListener("submit", async function(e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (msgEl) msgEl.textContent = "";
+        var propertyName = document.getElementById("mortgagePropertyName");
+        var loanAmountEl = document.getElementById("mortgageLoanAmount");
+        var interestRateEl = document.getElementById("mortgageInterestRate");
+        var termYearsEl = document.getElementById("mortgageTermYears");
+        var monthlyPaymentEl = document.getElementById("mortgageMonthlyPayment");
+        var remainingBalanceEl = document.getElementById("mortgageRemainingBalance");
+        var startDateEl = document.getElementById("mortgageStartDate");
+        if (!propertyName || !loanAmountEl || !interestRateEl || !termYearsEl || !monthlyPaymentEl || !remainingBalanceEl || !startDateEl) return;
+        var loanAmount = parseFloat(loanAmountEl.value);
+        var interestRate = parseFloat(interestRateEl.value);
+        var termYears = parseInt(termYearsEl.value, 10);
+        var monthlyPayment = parseFloat(monthlyPaymentEl.value);
+        var remainingBalance = parseFloat(remainingBalanceEl.value);
+        var startDateStr = startDateEl.value;
+        if (!propertyName.value.trim()) {
+            if (msgEl) msgEl.textContent = "Enter a property name.";
+            return;
+        }
+        if (isNaN(loanAmount) || loanAmount < 0 || isNaN(interestRate) || interestRate < 0 || isNaN(termYears) || termYears < 1 || isNaN(monthlyPayment) || monthlyPayment < 0 || isNaN(remainingBalance) || remainingBalance < 0) {
+            if (msgEl) msgEl.textContent = "Check all numeric fields.";
+            return;
+        }
+        if (!startDateStr) {
+            if (msgEl) msgEl.textContent = "Select a start date.";
+            return;
+        }
+        if (msgEl) msgEl.textContent = "Saving…";
+        try {
+            await addMortgageToFirestore({
+                propertyName: propertyName.value.trim(),
+                loanAmount: loanAmount,
+                interestRate: interestRate,
+                termYears: termYears,
+                monthlyPayment: monthlyPayment,
+                remainingBalance: remainingBalance,
+                startDate: startDateStr
+            });
+            form.reset();
+            if (msgEl) msgEl.textContent = "Mortgage added.";
+            await loadMortgages();
+        } catch (err) {
+            console.warn("addMortgageToFirestore:", err);
+            if (msgEl) msgEl.textContent = "Could not save. Try again.";
+        }
+    });
+}
+
+async function addMortgageToFirestore(data) {
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") {
+        throw new Error("Firebase not ready.");
+    }
+    var startDate = data.startDate ? firebase.firestore.Timestamp.fromDate(new Date(data.startDate + "T12:00:00")) : firebase.firestore.FieldValue.serverTimestamp();
+    return db.collection("mortgages").add({
+        userId: MORTGAGE_USER_ID,
+        propertyName: String(data.propertyName),
+        loanAmount: Number(data.loanAmount),
+        interestRate: Number(data.interestRate),
+        termYears: Number(data.termYears),
+        monthlyPayment: Number(data.monthlyPayment),
+        remainingBalance: Number(data.remainingBalance),
+        startDate: startDate
+    });
+}
+
+async function loadMortgages() {
+    var listEl = document.getElementById("mortgageList");
+    var emptyEl = document.getElementById("mortgageListEmpty");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    if (emptyEl) emptyEl.style.display = "block";
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") return;
+    try {
+        var snapshot = await db.collection("mortgages").get();
+        var items = [];
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var uid = (data && data.userId != null) ? String(data.userId).trim() : "";
+            if (uid && uid !== MORTGAGE_USER_ID.trim()) return;
+            var startDate = data.startDate;
+            var startStr = "";
+            var startMs = 0;
+            if (startDate && typeof startDate.toDate === "function") {
+                try {
+                    var d = startDate.toDate();
+                    startMs = d.getTime();
+                    startStr = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+                } catch (e) { startStr = "—"; }
+            } else if (startDate) startStr = String(startDate);
+            items.push({
+                id: doc.id,
+                propertyName: (data.propertyName != null) ? String(data.propertyName) : "—",
+                loanAmount: Number(data.loanAmount) || 0,
+                interestRate: Number(data.interestRate) || 0,
+                termYears: Number(data.termYears) || 0,
+                monthlyPayment: Number(data.monthlyPayment) || 0,
+                remainingBalance: Number(data.remainingBalance) || 0,
+                startStr: startStr || "—",
+                startMs: startMs
+            });
+        });
+        items.sort(function(a, b) { return b.startMs - a.startMs; });
+        items.forEach(function(item) {
+            var li = document.createElement("li");
+            li.className = "mortgage-item";
+            var details = document.createElement("div");
+            details.className = "mortgage-item-details";
+            var strong = document.createElement("strong");
+            strong.textContent = item.propertyName;
+            details.appendChild(strong);
+            var line1 = document.createElement("div");
+            line1.className = "mortgage-item-line";
+            line1.textContent = "Loan £" + item.loanAmount.toFixed(2) + " · " + item.interestRate + "% · " + item.termYears + " yrs";
+            details.appendChild(line1);
+            var line2 = document.createElement("div");
+            line2.className = "mortgage-item-line";
+            line2.textContent = "Monthly £" + item.monthlyPayment.toFixed(2) + " · Remaining £" + item.remainingBalance.toFixed(2) + " · From " + item.startStr;
+            details.appendChild(line2);
+            li.appendChild(details);
+            listEl.appendChild(li);
+        });
+        if (emptyEl) emptyEl.style.display = items.length > 0 ? "none" : "block";
+    } catch (err) {
+        console.warn("loadMortgages:", err);
+    }
 }
 
 // ============================================================================
@@ -816,20 +1306,20 @@ async function handleFormSubmit(elements, event) {
     console.log("📦 Created expense object:", expense);
     console.log("🚀 Calling addExpense...");
     
+    var errorEl = document.getElementById("expenseFormError");
+    if (errorEl) { errorEl.textContent = ""; errorEl.style.display = "none"; }
     try {
         await addExpense(expense);
-        console.log("✅ addExpense completed");
+        if (errorEl) { errorEl.textContent = ""; errorEl.style.display = "none"; }
+        elements.form.reset();
+        refreshAllDisplays();
     } catch (error) {
-        console.error("❌ Error in handleFormSubmit when calling addExpense:", error);
-        console.error("Error stack:", error.stack);
-        throw error; // Re-throw to be caught by outer try-catch if any
+        console.error("❌ Error in handleFormSubmit:", error);
+        if (errorEl) {
+            errorEl.textContent = error && error.message ? error.message : "Could not save expense. Try again.";
+            errorEl.style.display = "block";
+        }
     }
-    
-    // Reset form and refresh displays
-    elements.form.reset();
-    console.log("✅ Form reset");
-    refreshAllDisplays();
-    console.log("✅ UI refreshed after adding expense");
 }
 
 /**
@@ -1003,29 +1493,13 @@ async function addExpense(expense) {
         localStorage.setItem("expenses", JSON.stringify(expenses));
         console.log("✅ Expense saved to localStorage");
         
-        // Save to Firestore
+        // Save to Firestore (uses your existing "expenses" collection)
         if (firebaseReady && db) {
             try {
-                console.log("🔄 Attempting to save to Firestore...");
-                console.log("firebaseReady:", firebaseReady);
-                console.log("db exists:", !!db);
-                console.log("Firestore data:", {
-                    amount: expense.amount,
-                    category: expense.category,
-                    note: expense.note,
-                    date: expense.date
-                });
-                console.log("db object:", db);
-                console.log("db object type:", typeof db);
-                console.log("db.collection exists:", typeof db.collection === 'function');
-                console.log("firebase.firestore exists:", typeof firebase !== 'undefined' && typeof firebase.firestore !== 'undefined');
-                console.log("FieldValue exists:", typeof firebase !== 'undefined' && typeof firebase.firestore !== 'undefined' && typeof firebase.firestore.FieldValue !== 'undefined');
-                
                 if (!db || typeof db.collection !== 'function') {
                     throw new Error("Firestore db object is not valid");
                 }
                 
-                // Prepare data for Firestore (date as Timestamp, type: "bill" | "spending")
                 var dateTimestamp = expense.date
                     ? firebase.firestore.Timestamp.fromDate(new Date(expense.date + "T12:00:00"))
                     : firebase.firestore.FieldValue.serverTimestamp();
@@ -1041,16 +1515,8 @@ async function addExpense(expense) {
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
                 
-                console.log("📤 Sending to Firestore:", firestoreData);
-                console.log("Collection path: expenses");
-                
                 const docRef = await db.collection("expenses").add(firestoreData);
                 
-                console.log("✅ Firestore add() completed");
-                console.log("📄 Document reference:", docRef);
-                console.log("📄 Document ID:", docRef.id);
-                
-                // Store Firestore document ID with the expense
                 expense.id = docRef.id;
                 // If recurring bill, add to recurring_bills and link
                 if (expenseType === "bill" && billSched === "recurring") {
@@ -1076,28 +1542,16 @@ async function addExpense(expense) {
                 console.log("✅ Expense ID stored:", expense.id);
                 console.log("✅ Updated expenses array length:", expenses.length);
             } catch (error) {
-                console.error("❌ ERROR adding expense to Firestore");
-                console.error("Error code:", error.code);
-                console.error("Error message:", error.message);
-                console.error("Full error object:", error);
-                
-                if (error.code === 'permission-denied') {
-                    console.error("⚠️ PERMISSION DENIED!");
-                    console.error("Your Firestore security rules are blocking writes.");
-                    console.error("Go to Firebase Console > Firestore Database > Rules");
-                    console.error("Update rules to allow writes. Example rule:");
-                    console.error("match /expenses/{document=**} {");
-                    console.error("  allow read, write: if true;");
-                    console.error("}");
-                } else if (error.code === 'unavailable') {
-                    console.error("⚠️ Firestore is unavailable");
-                    console.error("Check your internet connection");
-                } else if (error.code === 'failed-precondition') {
-                    console.error("⚠️ Firestore precondition failed");
-                    console.error("Database may be in read-only mode");
+                console.error("❌ Error adding expense to Firestore:", error.code, error.message);
+                expenses.pop();
+                localStorage.setItem("expenses", JSON.stringify(expenses));
+                var msg = error.message || "Could not save to Firebase.";
+                if (error.code === "permission-denied" || (msg && msg.toLowerCase().indexOf("permission") !== -1)) {
+                    msg = "Firestore rules are blocking writes. In Firebase Console go to Firestore → Rules and allow read, write for expenses (and stocks).";
+                } else if (error.code === "unavailable") {
+                    msg = "Firestore unavailable. Check your internet connection.";
                 }
-                
-                console.log("⚠️ Expense saved to localStorage only (not synced to Firestore)");
+                throw new Error(msg);
             }
         } else {
             console.warn("⚠️ Firestore database not available");
@@ -1156,11 +1610,9 @@ function setupButtonListeners(elements) {
         console.warn("Clear all button not found");
     }
     
-    // Edit button (hidden but kept for potential future use)
+    // Edit button (optional – expense edit is via list item click)
     if (elements.editBtn) {
         elements.editBtn.addEventListener("click", handleEditButtonClick);
-    } else {
-        console.warn("Edit button not found");
     }
     
     // Export CSV button
@@ -1356,17 +1808,19 @@ function setupNavigationListeners(elements) {
     
     elements.homeTab.addEventListener("click", (e) => handleTabClick(e, "home"));
     elements.historyTab.addEventListener("click", (e) => handleTabClick(e, "history"));
+    if (elements.stocksTab) elements.stocksTab.addEventListener("click", (e) => handleTabClick(e, "stocks"));
+    if (elements.mortgageTab) elements.mortgageTab.addEventListener("click", (e) => handleTabClick(e, "mortgage"));
     
-    // Also listen to data-page attribute clicks as fallback
+    // Fallback for tabs that don't have an explicit listener (e.g. hourly)
     const navTabs = document.querySelectorAll('.nav-tab[data-page]');
     navTabs.forEach(tab => {
+        if (tab.id === "homeTab" || tab.id === "historyTab" || tab.id === "stocksTab" || tab.id === "mortgageTab") return;
         const pageName = tab.getAttribute('data-page');
         if (pageName && !tab.hasAttribute('data-listener-added')) {
             tab.setAttribute('data-listener-added', 'true');
             tab.addEventListener("click", (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.log(`Tab with data-page="${pageName}" clicked`);
                 switchPage(pageName, elements);
             });
         }
@@ -2084,9 +2538,13 @@ function switchPage(pageName, elements) {
     if (elements.homeTab) elements.homeTab.classList.remove("active");
     if (elements.historyTab) elements.historyTab.classList.remove("active");
     if (elements.hourlyTab) elements.hourlyTab.classList.remove("active");
+    if (elements.stocksTab) elements.stocksTab.classList.remove("active");
+    if (elements.mortgageTab) elements.mortgageTab.classList.remove("active");
     if (elements.homePage) elements.homePage.classList.remove("active");
     if (elements.historyPage) elements.historyPage.classList.remove("active");
     if (elements.hourlyPage) elements.hourlyPage.classList.remove("active");
+    if (elements.stocksPage) elements.stocksPage.classList.remove("active");
+    if (elements.mortgagePage) elements.mortgagePage.classList.remove("active");
     
     // Add active class to selected tab and page
     if (pageName === "home") {
@@ -2116,6 +2574,16 @@ function switchPage(pageName, elements) {
         console.log("✅ Switched to Hourly Tracker page");
         loadUserSettingsHourlyRate().catch(function(e) { console.warn("loadUserSettingsHourlyRate on switch:", e); });
         loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions on switch:", e); });
+    } else if (pageName === "stocks") {
+        if (elements.stocksTab) elements.stocksTab.classList.add("active");
+        if (elements.stocksPage) elements.stocksPage.classList.add("active");
+        console.log("✅ Switched to Stocks page");
+        loadPortfolioFromFirestore().catch(function(e) { console.warn("loadPortfolio on switch:", e); });
+    } else if (pageName === "mortgage") {
+        if (elements.mortgageTab) elements.mortgageTab.classList.add("active");
+        if (elements.mortgagePage) elements.mortgagePage.classList.add("active");
+        console.log("✅ Switched to Mortgage page");
+        loadMortgages().catch(function(e) { console.warn("loadMortgages on switch:", e); });
     }
 }
 
@@ -2331,6 +2799,21 @@ function setupModalListeners() {
             el.addEventListener("change", updateEditWorkSessionTotalDisplay);
         }
     });
+
+    // Edit stock modal (Portfolio)
+    var closeEditStockBtn = document.getElementById("closeEditStockModal");
+    var cancelEditStockBtn = document.getElementById("cancelEditStockBtn");
+    var saveEditStockBtn = document.getElementById("saveEditStockBtn");
+    if (closeEditStockBtn) closeEditStockBtn.addEventListener("click", closeEditStockModal);
+    if (cancelEditStockBtn) cancelEditStockBtn.addEventListener("click", closeEditStockModal);
+    if (saveEditStockBtn) saveEditStockBtn.addEventListener("click", handleSaveEditStock);
+    var editStockForm = document.getElementById("edit-stock-form");
+    if (editStockForm) {
+        editStockForm.addEventListener("submit", function(e) {
+            e.preventDefault();
+            handleSaveEditStock();
+        });
+    }
 }
 
 /**
@@ -2395,6 +2878,10 @@ function handleModalOutsideClick(event) {
     var editWorkSessionModal = document.getElementById("editWorkSessionModal");
     if (editWorkSessionModal && editWorkSessionModal.classList.contains("show") && event.target === editWorkSessionModal) {
         closeEditWorkSessionModal();
+    }
+    var editStockModal = document.getElementById("editStockModal");
+    if (editStockModal && editStockModal.classList.contains("show") && event.target === editStockModal) {
+        closeEditStockModal();
     }
 }
 

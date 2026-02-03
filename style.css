@@ -1805,6 +1805,14 @@ li.selected {
     font-weight: 500;
 }
 
+.expense-form-error {
+    display: none;
+    margin-top: 12px;
+    font-size: 14px;
+    color: var(--danger-color);
+    min-height: 20px;
+}
+
 /* Delete button styling */
 .expense-item button {
     background-color: var(--danger-color);
@@ -1976,4 +1984,246 @@ button:disabled{
     margin-top: 12px;
     font-size: 14px;
     color: var(--accent);
+}
+
+/* Stocks / Portfolio */
+.stocks-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 20px;
+    margin-bottom: 24px;
+}
+
+.stocks-form label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.stocks-submit {
+    margin-top: 4px;
+    padding: 12px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--bg-primary);
+    background: var(--primary-color);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.stocks-submit:hover {
+    background: var(--primary-hover);
+}
+
+.stocks-msg {
+    margin: 0 0 16px;
+    font-size: 14px;
+    color: var(--primary-color);
+    min-height: 20px;
+}
+
+.portfolio-section {
+    margin-top: 28px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.portfolio-section h3 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.portfolio-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.portfolio-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 0;
+    font-size: 14px;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.portfolio-item:last-child {
+    border-bottom: none;
+}
+
+.portfolio-item-details {
+    flex: 1;
+    min-width: 0;
+}
+
+.portfolio-item-line {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.portfolio-item-line:first-of-type {
+    margin-top: 0;
+}
+
+.portfolio-pl.positive {
+    color: var(--success-color);
+}
+
+.portfolio-pl.negative {
+    color: var(--danger-color);
+}
+
+.portfolio-edit-btn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.portfolio-edit-btn:hover {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.portfolio-delete-btn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.portfolio-delete-btn:hover {
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+.edit-stock-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.edit-stock-actions .btn-primary {
+    padding: 10px 20px;
+}
+
+.edit-stock-actions button:not(.btn-primary) {
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.edit-stock-actions button:not(.btn-primary):hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+}
+
+.portfolio-empty {
+    margin: 0;
+    padding: 16px 0;
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+/* Mortgage Tracker */
+.mortgage-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 20px;
+    margin-bottom: 24px;
+}
+
+.mortgage-form label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.mortgage-submit {
+    margin-top: 4px;
+    padding: 12px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--bg-primary);
+    background: var(--primary-color);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.mortgage-submit:hover {
+    background: var(--primary-hover);
+}
+
+.mortgage-list-section {
+    margin-top: 28px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.mortgage-list-section h3 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.mortgage-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.mortgage-item {
+    padding: 12px 0;
+    font-size: 14px;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.mortgage-item:last-child {
+    border-bottom: none;
+}
+
+.mortgage-item-details {
+    min-width: 0;
+}
+
+.mortgage-item-line {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.mortgage-item-line:first-of-type {
+    margin-top: 0;
 }

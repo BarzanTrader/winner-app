@@ -5,7 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Winner</title>
         <link rel="stylesheet" href="style.css" />
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js" crossorigin="anonymous"></script>
         <!-- Firebase compat SDK (required for firebase.xxx syntax) -->
         <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
         <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
@@ -30,6 +30,12 @@
                         </button>
                         <button class="nav-tab" data-page="hourly" id="hourlyTab">
                             <span>Hourly Tracker</span>
+                        </button>
+                        <button class="nav-tab" data-page="stocks" id="stocksTab">
+                            <span>Stocks</span>
+                        </button>
+                        <button class="nav-tab" data-page="mortgage" id="mortgageTab">
+                            <span>Mortgage</span>
                         </button>
                     </div>
                     
@@ -133,6 +139,7 @@
                             </div>
 
                             <button type="submit">Add expense</button>
+                            <p id="expenseFormError" class="expense-form-error" role="alert" aria-live="polite"></p>
                         </form>
                     </div>
                     
@@ -238,6 +245,54 @@
                         <div id="workSessionsSection" class="work-sessions-section">
                             <h3>Past sessions</h3>
                             <ul id="workSessionsList" class="work-sessions-list"></ul>
+                        </div>
+                    </div>
+
+                    <!-- Page 4: Stocks -->
+                    <div class="page" id="stocksPage">
+                        <h2>Portfolio</h2>
+                        <form id="stockForm" class="stocks-form">
+                            <label for="stockTicker">Ticker</label>
+                            <input type="text" id="stockTicker" placeholder="e.g. AAPL" required maxlength="12" autocomplete="off" />
+                            <label for="stockShares">Shares</label>
+                            <input type="number" id="stockShares" min="0" step="any" placeholder="0" required />
+                            <label for="stockAvgPrice">Avg price (£)</label>
+                            <input type="number" id="stockAvgPrice" min="0" step="0.01" placeholder="0.00" required />
+                            <button type="submit" class="btn-primary stocks-submit">Add holding</button>
+                        </form>
+                        <p id="stockFormMsg" class="stocks-msg" role="status" aria-live="polite"></p>
+                        <div class="portfolio-section">
+                            <h3>Your holdings</h3>
+                            <ul id="portfolioList" class="portfolio-list"></ul>
+                            <p id="portfolioEmpty" class="portfolio-empty">No holdings yet. Add a position above.</p>
+                        </div>
+                    </div>
+
+                    <!-- Page 5: Mortgage Tracker -->
+                    <div class="page" id="mortgagePage">
+                        <h2>Mortgage Tracker</h2>
+                        <form id="mortgageForm" class="mortgage-form">
+                            <label for="mortgagePropertyName">Property name</label>
+                            <input type="text" id="mortgagePropertyName" placeholder="e.g. Home" required />
+                            <label for="mortgageLoanAmount">Loan amount (£)</label>
+                            <input type="number" id="mortgageLoanAmount" min="0" step="0.01" placeholder="0.00" required />
+                            <label for="mortgageInterestRate">Interest rate (%)</label>
+                            <input type="number" id="mortgageInterestRate" min="0" step="0.01" placeholder="0.00" required />
+                            <label for="mortgageTermYears">Term (years)</label>
+                            <input type="number" id="mortgageTermYears" min="1" step="1" placeholder="25" required />
+                            <label for="mortgageMonthlyPayment">Monthly payment (£)</label>
+                            <input type="number" id="mortgageMonthlyPayment" min="0" step="0.01" placeholder="0.00" required />
+                            <label for="mortgageRemainingBalance">Remaining balance (£)</label>
+                            <input type="number" id="mortgageRemainingBalance" min="0" step="0.01" placeholder="0.00" required />
+                            <label for="mortgageStartDate">Start date</label>
+                            <input type="date" id="mortgageStartDate" required />
+                            <button type="submit" class="btn-primary mortgage-submit">Add mortgage</button>
+                        </form>
+                        <p id="mortgageFormMsg" class="stocks-msg" role="status" aria-live="polite"></p>
+                        <div class="mortgage-list-section">
+                            <h3>Your mortgages</h3>
+                            <ul id="mortgageList" class="mortgage-list"></ul>
+                            <p id="mortgageListEmpty" class="portfolio-empty">No mortgages yet. Add one above.</p>
                         </div>
                     </div>
                 </div>
@@ -357,6 +412,27 @@
                     </div>
                     <button type="button" id="saveEditBtn">Save Changes</button>
                 </form>
+            </div>
+        </div>
+
+        <!-- Edit Stock Modal -->
+        <div id="editStockModal" class="modal" aria-labelledby="editStockModalTitle" aria-hidden="true">
+            <div class="modal-content">
+                <span class="close" id="closeEditStockModal" aria-label="Close">&times;</span>
+                <h2 id="editStockModalTitle">Edit holding</h2>
+                <form id="edit-stock-form">
+                    <label for="editStockTicker">Ticker</label>
+                    <input type="text" id="editStockTicker" placeholder="e.g. AAPL" required maxlength="12" autocomplete="off" />
+                    <label for="editStockShares">Shares</label>
+                    <input type="number" id="editStockShares" min="0" step="any" placeholder="0" required />
+                    <label for="editStockAvgPrice">Avg price (£)</label>
+                    <input type="number" id="editStockAvgPrice" min="0" step="0.01" placeholder="0.00" required />
+                    <div class="edit-stock-actions">
+                        <button type="button" id="saveEditStockBtn" class="btn-primary">Save</button>
+                        <button type="button" id="cancelEditStockBtn">Cancel</button>
+                    </div>
+                </form>
+                <p id="editStockMsg" class="stocks-msg" role="status" aria-live="polite"></p>
             </div>
         </div>
         
