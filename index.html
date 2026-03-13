@@ -3,8 +3,8 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Winner</title>
-        <link rel="stylesheet" href="style.css" />
+        <title>Valoro</title>
+        <link rel="stylesheet" href="style.css?v=2" />
         <script src="https://cdn.jsdelivr.net/npm/chart.js" crossorigin="anonymous"></script>
         <!-- Firebase compat SDK (required for firebase.xxx syntax) -->
         <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
@@ -16,14 +16,17 @@
             <div class="application">
                 <div class="card">
                     <div class="header-section">
-                        <h1>Winner</h1>
+                        <h1>Valoro</h1>
                     </div>
-                    <div class="main-content">EXPENSE TRACKER</div>
+                    <div class="main-content">Expense tracker</div>
                     
                     <!-- Navigation Tabs -->
-                    <div class="nav-tabs">
+                    <div class="nav-tabs nav-tabs--pill">
                         <button class="nav-tab active" data-page="home" id="homeTab">
-                            <span>Add Expense</span>
+                            <span>Home</span>
+                        </button>
+                        <button class="nav-tab" data-page="expenses" id="expensesTab">
+                            <span>Expenses</span>
                         </button>
                         <button class="nav-tab" data-page="history" id="historyTab">
                             <span>History</span>
@@ -37,65 +40,134 @@
                         <button class="nav-tab" data-page="mortgage" id="mortgageTab">
                             <span>Mortgage</span>
                         </button>
+                        <button class="nav-tab" data-page="settings" id="settingsTab">
+                            <span>Settings</span>
+                        </button>
                     </div>
                     
-                    <!-- Page 1: Home (Add Expense) -->
+                    <!-- Page 1: Home (dashboard: summary, trackers, AI, notifications) -->
                     <div class="page active" id="homePage">
                         <!-- Dashboard -->
                         <div id="dashboard">
-                            <div id="dashboardEmptyState" class="dashboard-empty-state" aria-hidden="false">
-                                <p class="dashboard-empty-label">No data yet</p>
-                                <p class="dashboard-empty-hint">Add an expense below.</p>
+                            <!-- Hero: Total Balance (fintech-style focus) -->
+                            <div class="home-hero">
+                                <p class="home-hero-label">Total Balance</p>
+                                <p id="summaryCardTotalBalance" class="home-hero-value">£0.00</p>
                             </div>
-                            <div id="dashboardCards" class="dashboard-cards hidden">
-                                <div class="dashboard-card" id="monthlyTotalCard">
-                                    <h3>Total This Month</h3>
-                                    <p id="MonthlyTotal" class="dashboard-value">£0.00</p>
+                            <!-- Supporting metrics row -->
+                            <div class="dashboard-summary-row home-metrics-row" aria-label="Key metrics">
+                                <div class="summary-card summary-card-income">
+                                    <span class="summary-card-label">Monthly Income</span>
+                                    <p id="summaryCardMonthlyIncome" class="summary-card-value">£0.00</p>
                                 </div>
-                                <div class="dashboard-card" id="biggestCategoryCard">
-                                    <h3>Biggest Category</h3>
-                                    <p id="top-category" class="dashboard-value">-</p>
+                                <div class="summary-card summary-card-expenses">
+                                    <span class="summary-card-label">Monthly Expenses</span>
+                                    <p id="summaryCardMonthlyExpenses" class="summary-card-value">£0.00</p>
                                 </div>
-                                <div class="dashboard-card" id="avgExpenseCard">
-                                    <h3>Avg Daily Spend</h3>
-                                    <p id="average-expense" class="dashboard-value">£0.00</p>
-                                </div>
-                                <div class="dashboard-card" id="dailyBillsCard">
-                                    <h3>Daily Bills</h3>
-                                    <p id="dailyBillsValue" class="dashboard-value">£0.00</p>
+                                <div class="summary-card summary-card-portfolio">
+                                    <span class="summary-card-label">Portfolio</span>
+                                    <p id="summaryCardPortfolioValue" class="summary-card-value">£0.00</p>
                                 </div>
                             </div>
-                            <div id="todaysBreakdownSection" class="todays-breakdown-section">
-                                <h2>Today's Breakdown</h2>
-                                <p>You earned today: £<span id="breakdownEarnedToday">0.00</span></p>
-                                <p>Your daily bills share: £<span id="breakdownDailyBills">0.00</span></p>
-                                <p>Suggested to save: £<span id="breakdownSuggestedSave">0.00</span></p>
-                                <p>Safe to spend today: £<span id="breakdownSafeToSpend">0.00</span></p>
+                            <!-- Home layout: primary (left) and tools (right) -->
+                            <div class="home-layout">
+                                <div class="home-col home-highlights">
+                                    <div class="dashboard-panel income-tracker-panel">
+                                        <h2 class="dashboard-panel-title">Income</h2>
+                                        <div id="todaysBreakdownSection" class="todays-breakdown-section">
+                                            <p>You earned today: £<span id="breakdownEarnedToday">0.00</span></p>
+                                            <p>Your daily bills share: £<span id="breakdownDailyBills">0.00</span></p>
+                                            <p>Suggested to save: £<span id="breakdownSuggestedSave">0.00</span></p>
+                                            <p>Safe to spend today: £<span id="breakdownSafeToSpend">0.00</span></p>
+                                        </div>
+                                    </div>
+                                    <div class="dashboard-panel expense-tracker-panel">
+                                        <h2 class="dashboard-panel-title">Spending</h2>
+                                        <p class="chart-subtitle home-chart-subtitle">By category this month</p>
+                                        <div class="dashboard-chart-wrapper" style="height: 220px;">
+                                            <canvas id="DashboardExpensesByCategoryChart"></canvas>
+                                        </div>
+                                    </div>
+                                    <div class="dashboard-panel savings-goals-panel">
+                                        <h2 class="dashboard-panel-title">Savings</h2>
+                                        <div id="savingGoalsSection" class="saving-goals saving-goals-in-panel">
+                                            <button type="button" id="addSavingGoalBtn" class="add-saving-goal-btn">Add goal</button>
+                                            <ul id="savingGoalsList" class="saving-goals-list"></ul>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="home-col home-extras">
+                                    <div class="dashboard-panel portfolio-panel">
+                                        <h2 class="dashboard-panel-title">Portfolio</h2>
+                                        <a href="#" class="dashboard-panel-action" id="dashboardAddHoldingLink" data-page="stocks" aria-label="Add holding">+ Add</a>
+                                        <div class="portfolio-section">
+                                            <ul id="portfolioList" class="portfolio-list"></ul>
+                                            <p id="portfolioEmpty" class="portfolio-empty">No holdings. Use Stocks tab.</p>
+                                        </div>
+                                    </div>
+                                    <div class="dashboard-panel mortgage-panel">
+                                        <h2 class="dashboard-panel-title">Mortgage</h2>
+                                        <a href="#" class="dashboard-panel-action" id="dashboardAddMortgageLink" data-page="mortgage" aria-label="Add mortgage">+ Add</a>
+                                        <div class="mortgage-list-section">
+                                            <button type="button" id="simulateMonthlyPaymentBtn" class="mortgage-simulate-btn" aria-label="Simulate one monthly payment for all mortgages">Simulate payment</button>
+                                            <ul id="mortgageList" class="mortgage-list"></ul>
+                                            <p id="mortgageListEmpty" class="portfolio-empty">No mortgages. Use Mortgage tab.</p>
+                                        </div>
+                                    </div>
+                                    <div class="dashboard-panel ai-budget-panel">
+                                        <h2 class="dashboard-panel-title">AI insights</h2>
+                                        <div id="aiBudgetAssistantPanel" class="ai-budget-assistant-panel ai-budget-in-panel" aria-live="polite">
+                                            <p id="aiInsightSummary" class="ai-insight-summary">No insights yet. Click Refresh to generate.</p>
+                                            <ul id="aiInsightRecommendations" class="ai-insight-recommendations"></ul>
+                                            <p id="aiInsightMessage" class="ai-insight-message" role="status"></p>
+                                            <button type="button" id="refreshInsightsBtn" class="refresh-insights-btn">Refresh</button>
+                                        </div>
+                                    </div>
+                                    <div class="dashboard-panel notifications-dashboard-panel">
+                                        <h2 class="dashboard-panel-title">Alerts</h2>
+                                        <div id="notificationsPanel" class="notifications-panel notifications-in-panel">
+                                            <p id="notificationsEmpty" class="notifications-empty">No alerts.</p>
+                                            <ul id="notificationsList" class="notifications-list" aria-label="Notifications list"></ul>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <div id="monthlyOverviewSection" class="monthly-overview-section">
-                                <h2>Monthly Overview</h2>
-                                <p class="monthly-overview-bills">Total Bills this month: £<span id="monthlyOverviewBills">0.00</span></p>
-                                <p class="monthly-overview-spending">Total Spending this month: £<span id="monthlyOverviewSpending">0.00</span></p>
-                            </div>
-                            <div id="summary" class="dashboard-summary">
-                                <h2>Overview</h2>
-                                <p>Total Income: £<span id="totalIncome">0.00</span></p>
-                                <p>Total Expenses: £<span id="totalExpenses">0.00</span></p>
-                                <p><strong>Net balance: £<span id="netBalance">0.00</span></strong></p>
-                            </div>
-                            <div id="recurringBillsSection" class="recurring-bills">
-                                <h2>Recurring bills</h2>
-                                <p>Total: £<span id="recurringBillsTotal">0.00</span></p>
-                                <ul id="recurringBillsList" class="recurring-bills-list"></ul>
-                            </div>
-                            <div id="savingGoalsSection" class="saving-goals">
-                                <h2>Saving goals</h2>
-                                <ul id="savingGoalsList" class="saving-goals-list"></ul>
+                            <!-- Details moved to History tab to keep Home clean -->
+                            <!-- Saving goal add/edit modal -->
+                            <div id="savingGoalModal" class="saving-goal-modal" aria-hidden="true" role="dialog" aria-labelledby="savingGoalModalTitle">
+                                <div class="saving-goal-modal-content">
+                                    <h3 id="savingGoalModalTitle">Add saving goal</h3>
+                                    <form id="savingGoalForm">
+                                        <label for="savingGoalName">Goal name</label>
+                                        <input type="text" id="savingGoalName" placeholder="e.g. Emergency Fund, House, Travel" required />
+                                        <label for="savingGoalTargetAmount">Target amount (£)</label>
+                                        <input type="number" id="savingGoalTargetAmount" min="0" step="0.01" placeholder="0.00" required />
+                                        <label for="savingGoalTotalSaved">Total saved so far (£)</label>
+                                        <input type="number" id="savingGoalTotalSaved" min="0" step="0.01" placeholder="0.00" />
+                                        <label for="savingGoalPriority">Priority</label>
+                                        <select id="savingGoalPriority">
+                                            <option value="High">High</option>
+                                            <option value="Medium" selected>Medium</option>
+                                            <option value="Low">Low</option>
+                                        </select>
+                                        <label for="savingGoalDeadline">Deadline (optional)</label>
+                                        <input type="date" id="savingGoalDeadline" />
+                                        <label for="savingGoalMonthlySuggested">Monthly suggested contribution (£, optional)</label>
+                                        <input type="number" id="savingGoalMonthlySuggested" min="0" step="0.01" placeholder="0.00" />
+                                        <div class="saving-goal-modal-actions">
+                                            <button type="submit" id="savingGoalSubmitBtn" class="saving-goal-submit-btn">Add goal</button>
+                                            <button type="button" class="saving-goal-cancel-btn" id="savingGoalCancelBtn">Cancel</button>
+                                        </div>
+                                    </form>
+                                </div>
                             </div>
                         </div>
+                    </div>
 
-                        
-                        <h2>Add expense</h2>
+                    <!-- Page 2: Expenses (Add expense) -->
+                    <div class="page" id="expensesPage">
+                        <h2>Expenses</h2>
+                        <p class="expenses-page-hint">Add an expense below. View full history and charts in the <strong>History</strong> tab.</p>
                         <p id="total">Total: £0.00</p>
                         <form id="expense-form">
                             <label>
@@ -143,7 +215,7 @@
                         </form>
                     </div>
                     
-                    <!-- Page 2: History (View All) -->
+                    <!-- Page 4: History (View All) -->
                     <div class="page" id="historyPage">
                         <h2>Expense History</h2>
                         
@@ -160,6 +232,13 @@
                         <div class="history-toggle-row">
                             <button id="toggleMonthlyChartBtn" class="history-toggle-btn">Hide monthly chart</button>
                             <button id="toggleCategoryChartBtn" class="history-toggle-btn">Hide category chart</button>
+                            <button id="toggleIncomeVsExpensesChartBtn" class="history-toggle-btn">Hide Income vs Expenses</button>
+                        </div>
+                        
+                        <!-- Income vs Expenses (monthly by week) -->
+                        <div class="chart-container chart-visible" id="incomeVsExpensesChartSection">
+                            <h3>Income vs Expenses (this month)</h3>
+                            <canvas id="IncomeVsExpensesChart"></canvas>
                         </div>
                         
                         <!-- Chart Section (visible by default so charts show) -->
@@ -190,17 +269,83 @@
                         <h4>By Category</h4>
                         <ul id="categorySummary"></ul>
 
-                        <!-- Category Chart (visible by default) -->
+                        <!-- Chart B: Expenses by Category (current month, auto-categorised) -->
                         <div class="chart-container chart-visible" id="categoryChartSection">
-                            <h3>Spending by Category</h3>
+                            <h3>Chart B — Expenses by Category (current month)</h3>
+                            <p class="chart-subtitle">Distribution by auto-categorised expenses</p>
                             <canvas id="ExpensesChart"></canvas>
                         </div>
                         
                         <h3>Expenses</h3>
                         <ul id="expense-list" class="expense-list-visible"></ul>
+
+                        <!-- Detailed overview previously under Home "View details" -->
+                        <section class="history-details-section">
+                            <div id="dashboardEmptyState" class="dashboard-empty-state" aria-hidden="false">
+                                <p class="dashboard-empty-label">No data yet</p>
+                                <p class="dashboard-empty-hint">Add an expense in the Expenses tab.</p>
+                            </div>
+                            <div id="dashboardCards" class="dashboard-cards hidden">
+                                <div class="dashboard-card" id="monthlyTotalCard">
+                                    <h3>Total This Month</h3>
+                                    <p id="MonthlyTotal" class="dashboard-value">£0.00</p>
+                                </div>
+                                <div class="dashboard-card" id="biggestCategoryCard">
+                                    <h3>Biggest Category</h3>
+                                    <p id="top-category" class="dashboard-value">-</p>
+                                </div>
+                                <div class="dashboard-card" id="avgExpenseCard">
+                                    <h3>Avg Daily Spend</h3>
+                                    <p id="average-expense" class="dashboard-value">£0.00</p>
+                                </div>
+                                <div class="dashboard-card" id="dailyBillsCard">
+                                    <h3>Daily Bills</h3>
+                                    <p id="dailyBillsValue" class="dashboard-value">£0.00</p>
+                                </div>
+                                <div class="dashboard-card" id="netWorthCard">
+                                    <h3>Net Worth</h3>
+                                    <p id="netWorthCardValue" class="dashboard-value">£0.00</p>
+                                </div>
+                            </div>
+                            <div id="monthlyOverviewSection" class="monthly-overview-section">
+                                <h2>Monthly Overview</h2>
+                                <p class="monthly-overview-bills">Total Bills this month: £<span id="monthlyOverviewBills">0.00</span></p>
+                                <p class="monthly-overview-spending">Total Spending this month: £<span id="monthlyOverviewSpending">0.00</span></p>
+                                <div id="monthlyBudgetProgressWrap" class="key-metric-progress-wrap" aria-hidden="true" style="display: none;">
+                                    <p class="key-metric-label">Budget used this month</p>
+                                    <div class="key-metric-bar-wrap">
+                                        <div id="monthlyBudgetProgressBar" class="key-metric-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%;"></div>
+                                        <span id="monthlyBudgetProgressPct" class="key-metric-pct">0%</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="spendingIncomeOverviewPanel" class="spending-income-overview-panel">
+                                <h2>Spending &amp; Income Overview</h2>
+                                <div class="dashboard-charts-row">
+                                    <div class="dashboard-chart-container">
+                                        <p class="chart-subtitle">Income vs expenses by week (current month)</p>
+                                        <div class="dashboard-chart-wrapper" style="height: 240px;">
+                                            <canvas id="DashboardIncomeVsExpensesChart"></canvas>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="summary" class="dashboard-summary">
+                                <h2>Overview</h2>
+                                <p>Total Income: £<span id="totalIncome">0.00</span></p>
+                                <p>Total Expenses: £<span id="totalExpenses">0.00</span></p>
+                                <p><strong>Net balance: £<span id="netBalance">0.00</span></strong></p>
+                                <p><strong>Net Worth: £<span id="netWorth">0.00</span></strong></p>
+                            </div>
+                            <div id="recurringBillsSection" class="recurring-bills">
+                                <h2>Recurring bills</h2>
+                                <p>Total: £<span id="recurringBillsTotal">0.00</span></p>
+                                <ul id="recurringBillsList" class="recurring-bills-list"></ul>
+                            </div>
+                        </section>
                     </div>
 
-                    <!-- Page 3: Hourly Tracker -->
+                    <!-- Page 5: Hourly Tracker -->
                     <div class="page" id="hourlyPage">
                         <h2>Hourly Tracker</h2>
                         <div class="hourly-rate-setting">
@@ -208,6 +353,8 @@
                             <input type="number" id="hourlyRateInput" min="0" step="0.01" placeholder="0.00" />
                             <label for="savingsPercentInput">Auto-save percentage (%)</label>
                             <input type="number" id="savingsPercentInput" min="0" max="100" step="0.5" placeholder="20" aria-label="Auto-save percentage" />
+                            <label for="monthlyBudgetInput">Monthly budget (£)</label>
+                            <input type="number" id="monthlyBudgetInput" min="0" step="0.01" placeholder="0.00" aria-label="Monthly budget for overspend alerts" />
                             <button type="button" id="savePreferenceBtn" class="save-preference-btn">Save preference</button>
                             <span id="hourlyRateMsg" class="hourly-msg" aria-live="polite"></span>
                         </div>
@@ -235,6 +382,14 @@
                         <p id="todayEarningDisplay" class="today-earning">Today: £0.00</p>
                         <p id="weekEarningDisplay" class="week-earning">This week: £0.00</p>
                         <p id="pacingDisplay" class="pacing-projection">If you keep this pace: £0.00 today, £0.00 week, £0.00 month</p>
+                        <div id="thisMonthPanel" class="this-month-panel" aria-live="polite">
+                            <h3 class="this-month-panel-title">This month</h3>
+                            <p id="hoursWorkedThisMonthDisplay" class="this-month-line">Hours worked this month: 0.00</p>
+                            <p id="earningsThisMonthDisplay" class="this-month-line">Earnings this month: £0.00</p>
+                            <p id="projectedIncomeThisMonthDisplay" class="this-month-line">Projected income this month: £0.00</p>
+                            <p id="holidayAccruedThisMonthDisplay" class="this-month-line">Holiday hours accrued this month: 0.00</p>
+                            <p id="totalHolidayAccruedDisplay" class="this-month-line">Total holiday hours accrued: 0.00</p>
+                        </div>
                         <div id="smartSavingsBox" class="smart-savings-box" aria-live="polite">
                             <h3 class="smart-savings-title">Smart savings</h3>
                             <p id="suggestedSavingsDisplay" class="suggested-savings-text">Suggested to save today £0.00</p>
@@ -248,9 +403,10 @@
                         </div>
                     </div>
 
-                    <!-- Page 4: Stocks -->
+                    <!-- Page 6: Stocks -->
                     <div class="page" id="stocksPage">
                         <h2>Portfolio</h2>
+                        <p class="dashboard-link-hint">Your holdings are shown on the main dashboard. Add a position below.</p>
                         <form id="stockForm" class="stocks-form">
                             <label for="stockTicker">Ticker</label>
                             <input type="text" id="stockTicker" placeholder="e.g. AAPL" required maxlength="12" autocomplete="off" />
@@ -261,16 +417,12 @@
                             <button type="submit" class="btn-primary stocks-submit">Add holding</button>
                         </form>
                         <p id="stockFormMsg" class="stocks-msg" role="status" aria-live="polite"></p>
-                        <div class="portfolio-section">
-                            <h3>Your holdings</h3>
-                            <ul id="portfolioList" class="portfolio-list"></ul>
-                            <p id="portfolioEmpty" class="portfolio-empty">No holdings yet. Add a position above.</p>
-                        </div>
                     </div>
 
-                    <!-- Page 5: Mortgage Tracker -->
+                    <!-- Page 7: Mortgage Tracker -->
                     <div class="page" id="mortgagePage">
                         <h2>Mortgage Tracker</h2>
+                        <p class="dashboard-link-hint">Your mortgages are shown on the main dashboard. Add one below.</p>
                         <form id="mortgageForm" class="mortgage-form">
                             <label for="mortgagePropertyName">Property name</label>
                             <input type="text" id="mortgagePropertyName" placeholder="e.g. Home" required />
@@ -289,11 +441,91 @@
                             <button type="submit" class="btn-primary mortgage-submit">Add mortgage</button>
                         </form>
                         <p id="mortgageFormMsg" class="stocks-msg" role="status" aria-live="polite"></p>
-                        <div class="mortgage-list-section">
-                            <h3>Your mortgages</h3>
-                            <ul id="mortgageList" class="mortgage-list"></ul>
-                            <p id="mortgageListEmpty" class="portfolio-empty">No mortgages yet. Add one above.</p>
-                        </div>
+                    </div>
+
+                    <!-- Page 8: Settings / Personalisation -->
+                    <div class="page" id="settingsPage">
+                        <h2>Settings &amp; Personalisation</h2>
+                        <form id="settingsForm" class="settings-form">
+                            <section class="settings-section" aria-labelledby="settings-financial-heading">
+                                <h3 id="settings-financial-heading">Financial Preferences</h3>
+                                <label for="settingsMonthlyBudget" id="settingsMonthlyBudgetLabel">Monthly budget</label>
+                                <input type="number" id="settingsMonthlyBudget" min="0" step="0.01" placeholder="0.00" />
+                                <label for="settingsSavingsRate">Preferred savings rate (%)</label>
+                                <input type="number" id="settingsSavingsRate" min="0" max="100" step="0.5" placeholder="20" />
+                                <label for="settingsRiskLevel">Risk level</label>
+                                <select id="settingsRiskLevel">
+                                    <option value="Conservative">Conservative</option>
+                                    <option value="Balanced" selected>Balanced</option>
+                                    <option value="Growth">Growth</option>
+                                </select>
+                            </section>
+                            <section class="settings-section" aria-labelledby="settings-income-heading">
+                                <h3 id="settings-income-heading">Income Settings</h3>
+                                <label for="settingsHourlyRate">Default hourly rate</label>
+                                <input type="number" id="settingsHourlyRate" min="0" step="0.01" placeholder="0.00" />
+                                <label for="settingsIncomeSource">Income source</label>
+                                <select id="settingsIncomeSource">
+                                    <option value="tracker">Tracker only</option>
+                                    <option value="manual">Manual only</option>
+                                    <option value="both" selected>Both</option>
+                                </select>
+                            </section>
+                            <section class="settings-section" aria-labelledby="settings-notifications-heading">
+                                <h3 id="settings-notifications-heading">Notifications</h3>
+                                <label class="settings-toggle-label">
+                                    <input type="checkbox" id="settingsNotifyOverspend" checked />
+                                    <span>Overspending alerts</span>
+                                </label>
+                                <label class="settings-toggle-label">
+                                    <input type="checkbox" id="settingsNotifyBillReminder" checked />
+                                    <span>Bill reminders</span>
+                                </label>
+                                <label class="settings-toggle-label">
+                                    <input type="checkbox" id="settingsNotifySavingsSuggestion" checked />
+                                    <span>Savings suggestions</span>
+                                </label>
+                                <label class="settings-toggle-label">
+                                    <input type="checkbox" id="settingsNotifyIncomeMilestone" checked />
+                                    <span>Income milestone alerts</span>
+                                </label>
+                            </section>
+                            <section class="settings-section" aria-labelledby="settings-categories-heading">
+                                <h3 id="settings-categories-heading">Expense Categories</h3>
+                                <p class="settings-hint">Add or rename categories. Changes apply to new expenses and the dropdown.</p>
+                                <div id="settingsCategoriesList" class="settings-categories-list"></div>
+                                <div class="settings-category-add">
+                                    <input type="text" id="settingsNewCategoryName" placeholder="New category name" />
+                                    <button type="button" id="settingsAddCategoryBtn" class="settings-btn-secondary">Add category</button>
+                                </div>
+                                <div class="settings-category-merge">
+                                    <label>Merge category</label>
+                                    <select id="settingsMergeFrom" aria-label="From category"><option value="">— From —</option></select>
+                                    <span aria-hidden="true">into</span>
+                                    <select id="settingsMergeInto" aria-label="Into category"><option value="">— Into —</option></select>
+                                    <button type="button" id="settingsMergeCategoriesBtn" class="settings-btn-secondary">Merge</button>
+                                </div>
+                            </section>
+                            <section class="settings-section" aria-labelledby="settings-display-heading">
+                                <h3 id="settings-display-heading">Display &amp; Currency</h3>
+                                <label for="settingsCurrency">Currency</label>
+                                <select id="settingsCurrency">
+                                    <option value="EUR">€ (Euro)</option>
+                                    <option value="GBP" selected>£ (Pound)</option>
+                                    <option value="USD">$ (US Dollar)</option>
+                                </select>
+                                <label for="settingsDateFormat">Date format</label>
+                                <select id="settingsDateFormat">
+                                    <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                                    <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                                    <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+                                </select>
+                            </section>
+                            <div class="settings-actions">
+                                <button type="submit" id="settingsSaveBtn" class="settings-save-btn">Save settings</button>
+                            </div>
+                        </form>
+                        <p id="settingsMsg" class="settings-msg" role="status" aria-live="polite"></p>
                     </div>
                 </div>
             </div>
@@ -304,7 +536,7 @@
             <div class="modal-content onboarding-content">
                 <div class="onboarding-slide active" data-slide="1">
                     <div class="onboarding-icon">💰</div>
-                    <h2>Welcome to Winner</h2>
+                    <h2>Welcome to Valoro</h2>
                     <p>Track your expenses effortlessly and stay on top of your finances.</p>
                 </div>
                 <div class="onboarding-slide" data-slide="2">
@@ -433,6 +665,35 @@
                     </div>
                 </form>
                 <p id="editStockMsg" class="stocks-msg" role="status" aria-live="polite"></p>
+            </div>
+        </div>
+
+        <!-- Edit Mortgage Modal -->
+        <div id="editMortgageModal" class="modal" aria-labelledby="editMortgageModalTitle" aria-hidden="true">
+            <div class="modal-content">
+                <span class="close" id="closeEditMortgageModal" aria-label="Close">&times;</span>
+                <h2 id="editMortgageModalTitle">Edit mortgage</h2>
+                <form id="edit-mortgage-form">
+                    <label for="editMortgagePropertyName">Property name</label>
+                    <input type="text" id="editMortgagePropertyName" required />
+                    <label for="editMortgageLoanAmount">Loan amount (£)</label>
+                    <input type="number" id="editMortgageLoanAmount" min="0" step="0.01" required />
+                    <label for="editMortgageInterestRate">Interest rate (%)</label>
+                    <input type="number" id="editMortgageInterestRate" min="0" step="0.01" required />
+                    <label for="editMortgageTermYears">Term (years)</label>
+                    <input type="number" id="editMortgageTermYears" min="1" step="1" required />
+                    <label for="editMortgageMonthlyPayment">Monthly payment (£)</label>
+                    <input type="number" id="editMortgageMonthlyPayment" min="0" step="0.01" required />
+                    <label for="editMortgageRemainingBalance">Remaining balance (£)</label>
+                    <input type="number" id="editMortgageRemainingBalance" min="0" step="0.01" required />
+                    <label for="editMortgageStartDate">Start date</label>
+                    <input type="date" id="editMortgageStartDate" required />
+                    <div class="edit-stock-actions">
+                        <button type="button" id="saveEditMortgageBtn" class="btn-primary">Save</button>
+                        <button type="button" id="cancelEditMortgageBtn">Cancel</button>
+                    </div>
+                </form>
+                <p id="editMortgageMsg" class="stocks-msg" role="status" aria-live="polite"></p>
             </div>
         </div>
         

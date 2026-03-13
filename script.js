@@ -122,8 +122,8 @@ async function createBaseCollections() {
         return;
     }
     
-    // Collections to ensure exist (init doc added only if collection is empty). Includes "stocks" and "mortgages".
-    const collections = ["users", "expenses", "hours", "income", "settings", "waitlist", "recurring_bills", "saving_goals", "work_sessions", "user_settings", "stocks", "mortgages"];
+    // Collections to ensure exist (init doc added only if collection is empty). Includes "stocks", "mortgages", "aiInsights".
+    const collections = ["users", "expenses", "hours", "income", "settings", "waitlist", "recurring_bills", "saving_goals", "work_sessions", "stocks", "mortgages", "aiInsights", "notifications"];
     
     try {
         for (const collectionName of collections) {
@@ -153,6 +153,9 @@ let expenses = [];              // Array storing all expense objects
 let selectedExpense = null;     // Currently selected expense for editing
 let monthlyChart = null;        // Chart.js instance for monthly chart
 let categoryChart = null;       // Chart.js instance for category chart
+let incomeVsExpensesChart = null; // Chart.js instance for Income vs Expenses (weekly)
+let dashboardIncomeVsExpensesChart = null; // Dashboard panel: income vs expenses by week
+let dashboardExpensesByCategoryChart = null; // Dashboard panel: expenses by category
 let selectedMonthFilter = "current"; // 'current', 'all', or specific 'YYYY-MM'
 
 // Hourly tracker: current session and live timer
@@ -162,6 +165,8 @@ let hourlyTimerIntervalId = null;
 let currentHourlyRate = 0;
 /** Savings percentage (0–100), from user_settings */
 let currentSavingsPercent = 0;
+/** Holiday accrual rate, UK/Italian style approximation (12.07% of hours worked) */
+var HOLIDAY_ACCRUAL_RATE = 0.1207;
 /** When set, user clicked Stop work and we're waiting for break duration before saving */
 let hourlySessionPausedAt = null;
 
@@ -208,12 +213,17 @@ document.addEventListener("DOMContentLoaded", async function() {
     loadRecurringBills().catch(function(err) { console.warn("loadRecurringBills on init:", err); });
     loadSavingGoals().catch(function(err) { console.warn("loadSavingGoals on init:", err); });
     loadUserSettingsHourlyRate().then(function() { return loadWorkSessions(); }).catch(function(err) { console.warn("Hourly tracker on init:", err); });
+    loadAppPreferences().then(function() { populateCategoryDropdowns(); }).catch(function(err) { console.warn("loadAppPreferences on init:", err); });
+    loadPortfolioFromFirestore().catch(function(e) { console.warn("loadPortfolio on init:", e); });
+    loadMortgages().catch(function(e) { console.warn("loadMortgages on init:", e); });
     setTimeout(function() {
         loadExpensesFromStorage().catch(function(err) { console.warn("Delayed load expenses:", err); });
         loadSummary().catch(function(err) { console.warn("Delayed loadSummary:", err); });
         loadRecurringBills().catch(function(err) { console.warn("Delayed loadRecurringBills:", err); });
         loadSavingGoals().catch(function(err) { console.warn("Delayed loadSavingGoals:", err); });
         loadUserSettingsHourlyRate().then(function() { return loadWorkSessions(); }).catch(function(err) { console.warn("Delayed hourly tracker:", err); });
+        loadPortfolioFromFirestore().catch(function(e) { console.warn("Delayed loadPortfolio:", e); });
+        loadMortgages().catch(function(e) { console.warn("Delayed loadMortgages:", e); });
     }, 2000);
     document.addEventListener("visibilitychange", function() {
         if (document.visibilityState === "visible" && db && typeof db.collection === "function") {
@@ -221,6 +231,9 @@ document.addEventListener("DOMContentLoaded", async function() {
             loadSummary().catch(function(err) { console.warn("Visibility loadSummary:", err); });
             loadRecurringBills().catch(function(err) { console.warn("Visibility loadRecurringBills:", err); });
             loadSavingGoals().catch(function(err) { console.warn("Visibility loadSavingGoals:", err); });
+            loadAppPreferences().catch(function(err) { console.warn("Visibility loadAppPreferences:", err); });
+            loadPortfolioFromFirestore().catch(function(e) { console.warn("Visibility loadPortfolio:", e); });
+            loadMortgages().catch(function(e) { console.warn("Visibility loadMortgages:", e); });
         }
     });
     
@@ -252,6 +265,7 @@ document.addEventListener("DOMContentLoaded", async function() {
             
             const testData = {
                 amount: 1.00,
+                description: "Test expense",
                 category: "Test",
                 note: "Test expense",
                 date: new Date().toISOString().split('T')[0],
@@ -401,15 +415,19 @@ function getDOMElements() {
         editBtn: document.getElementById("editBtn"),
         exportBtn: document.getElementById("exportbtn"),
         homeTab: document.getElementById("homeTab"),
+        expensesTab: document.getElementById("expensesTab"),
         historyTab: document.getElementById("historyTab"),
         hourlyTab: document.getElementById("hourlyTab"),
         stocksTab: document.getElementById("stocksTab"),
         mortgageTab: document.getElementById("mortgageTab"),
+        settingsTab: document.getElementById("settingsTab"),
         homePage: document.getElementById("homePage"),
+        expensesPage: document.getElementById("expensesPage"),
         historyPage: document.getElementById("historyPage"),
         hourlyPage: document.getElementById("hourlyPage"),
         stocksPage: document.getElementById("stocksPage"),
         mortgagePage: document.getElementById("mortgagePage"),
+        settingsPage: document.getElementById("settingsPage"),
         monthFilter: document.getElementById("monthFilter"),
         onboardingModal: document.getElementById("onboardingModal"),
         skipOnboardingBtn: document.getElementById("skipOnboarding"),
@@ -537,11 +555,11 @@ async function loadExpensesFromStorage() {
             snapshot.forEach(function(doc) {
                 const data = doc.data();
                 if (data && data.init === true) return;
-                var note = (data && (data.note != null ? data.note : data.notes)) || "";
+                var note = (data && (data.description != null ? data.description : (data.note != null ? data.note : data.notes))) || "";
                 var amount = Number(data && data.amount);
                 if (isNaN(amount)) amount = 0;
                 var date = parseExpenseDate(data && data.date);
-                var category = (data && data.category) || "";
+                var category = (data && data.category != null && String(data.category).trim()) ? String(data.category).trim() : "Other";
                 var typeVal = (data.type === "bill" || data.type === "spending") ? data.type : "spending";
                 var billSched = (typeVal === "bill" && (data.billSchedule === "recurring" || data.billSchedule === "single")) ? data.billSchedule : "single";
                 var recurringBillId = (data.recurringBillId && typeof data.recurringBillId === "string") ? data.recurringBillId : null;
@@ -550,12 +568,30 @@ async function loadExpensesFromStorage() {
                     note: String(note),
                     amount: amount,
                     date: date,
-                    category: String(category),
+                    category: category,
                     type: typeVal,
                     billSchedule: billSched,
                     recurringBillId: recurringBillId || undefined
                 });
             });
+
+            // Backfill: ensure every expense doc has description and category (fire-and-forget)
+            try {
+                snapshot.forEach(function(doc) {
+                    var d = doc.data();
+                    if (d && d.init === true) return;
+                    var needsDesc = d.description === undefined || d.description === null;
+                    var needsCat = d.category === undefined || d.category === null || String(d.category).trim() === "";
+                    if (needsDesc || needsCat) {
+                        var update = {};
+                        if (needsDesc) update.description = (d.note != null ? String(d.note) : (d.notes != null ? String(d.notes) : ""));
+                        if (needsCat) update.category = "Other";
+                        db.collection("expenses").doc(doc.id).update(update).catch(function(e) { console.warn("Backfill description/category for " + doc.id + ":", e); });
+                    }
+                });
+            } catch (backfillErr) {
+                console.warn("Backfill description/category:", backfillErr);
+            }
 
             // Backfill: any expense with type bill + recurring but no recurringBillId gets a doc in recurring_bills
             if (typeof firebase !== "undefined" && firebase.firestore && firebase.firestore.FieldValue) {
@@ -563,11 +599,17 @@ async function loadExpensesFromStorage() {
                     var exp = expenses[i];
                     if (exp && exp.type === "bill" && exp.billSchedule === "recurring" && !exp.recurringBillId && exp.id) {
                         try {
+                            var dueDay = 1;
+                            if (exp.date && typeof exp.date === "string" && exp.date.length >= 10) {
+                                var d = parseInt(exp.date.slice(8, 10), 10);
+                                if (!isNaN(d) && d >= 1 && d <= 31) dueDay = d;
+                            }
                             var rbRef = await db.collection("recurring_bills").add({
                                 amount: exp.amount,
                                 note: exp.note || "",
                                 name: exp.note || "",
                                 expenseId: exp.id,
+                                dueDayOfMonth: dueDay,
                                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
                             });
                             exp.recurringBillId = rbRef.id;
@@ -740,7 +782,10 @@ function refreshAllDisplays() {
     calculateAndDisplayTotals(); // Update monthly total and category summary
     renderChart();
     updateDashboard();
+    loadSummary().catch(function(e) { console.warn("refreshAllDisplays loadSummary:", e); });
     loadWorkSessions().catch(function(e) { console.warn("refreshAllDisplays loadWorkSessions:", e); });
+    refreshSpendingIncomeOverviewCharts().catch(function(e) { console.warn("refreshSpendingIncomeOverviewCharts:", e); });
+    loadSavingGoals().catch(function(e) { console.warn("refreshAllDisplays loadSavingGoals:", e); });
 }
 
 /**
@@ -758,6 +803,100 @@ function setupEventListeners(elements) {
     setupHourlyTrackerListener(elements);
     setupStocksListener();
     setupMortgageListener();
+    setupAiBudgetAssistantListener();
+    setupSettingsListeners();
+}
+
+/**
+ * Sets up Settings page: form submit and Add category button.
+ */
+function setupSettingsListeners() {
+    var form = document.getElementById("settingsForm");
+    var addCatBtn = document.getElementById("settingsAddCategoryBtn");
+    if (form && !form.dataset.settingsBound) {
+        form.dataset.settingsBound = "true";
+        form.addEventListener("submit", function(e) {
+            e.preventDefault();
+            saveSettingsFromForm(e);
+        });
+    }
+    if (addCatBtn && !addCatBtn.dataset.settingsBound) {
+        addCatBtn.dataset.settingsBound = "true";
+        addCatBtn.addEventListener("click", function() {
+            var input = document.getElementById("settingsNewCategoryName");
+            var name = input && input.value ? input.value.trim() : "";
+            if (!name) return;
+            if (!appPreferences.categories) appPreferences.categories = DEFAULT_EXPENSE_CATEGORIES.slice();
+            if (appPreferences.categories.indexOf(name) !== -1) return;
+            appPreferences.categories.push(name);
+            renderSettingsCategoriesList();
+            populateSettingsMergeDropdowns();
+            if (input) input.value = "";
+        });
+    }
+    var mergeBtn = document.getElementById("settingsMergeCategoriesBtn");
+    if (mergeBtn && !mergeBtn.dataset.settingsBound) {
+        mergeBtn.dataset.settingsBound = "true";
+        mergeBtn.addEventListener("click", function() {
+            handleMergeCategories().catch(function(e) { console.warn("handleMergeCategories:", e); });
+        });
+    }
+}
+
+/**
+ * Merges one expense category into another: updates all expenses with "from" category to "into" category (in-memory and Firestore), then removes "from" from categories list.
+ */
+async function handleMergeCategories() {
+    var fromEl = document.getElementById("settingsMergeFrom");
+    var intoEl = document.getElementById("settingsMergeInto");
+    var msgEl = document.getElementById("settingsMsg");
+    var fromCat = fromEl && fromEl.value ? fromEl.value.trim() : "";
+    var intoCat = intoEl && intoEl.value ? intoEl.value.trim() : "";
+    if (!fromCat || !intoCat) {
+        if (msgEl) { msgEl.textContent = "Select both \"From\" and \"Into\" categories."; msgEl.className = "settings-msg error"; }
+        return;
+    }
+    if (fromCat === intoCat) {
+        if (msgEl) { msgEl.textContent = "From and Into must be different."; msgEl.className = "settings-msg error"; }
+        return;
+    }
+    var updated = 0;
+    if (Array.isArray(expenses)) {
+        for (var i = 0; i < expenses.length; i++) {
+            var exp = expenses[i];
+            if (exp && String(exp.category || "").trim() === fromCat) {
+                exp.category = intoCat;
+                updated++;
+                if (exp.id && db && typeof db.collection === "function") {
+                    try {
+                        await db.collection("expenses").doc(exp.id).update({ category: intoCat });
+                    } catch (e) { console.warn("Merge update expense " + exp.id + ":", e); }
+                }
+            }
+        }
+    }
+    var cats = appPreferences.categories || [];
+    var idx = cats.indexOf(fromCat);
+    if (idx !== -1) {
+        cats.splice(idx, 1);
+        appPreferences.categories = cats;
+    }
+    renderSettingsCategoriesList();
+    populateSettingsMergeDropdowns();
+    var prefsRef = getUserSettingsDocRef(USER_SETTINGS_PREFERENCES_DOC_ID);
+    if (prefsRef) {
+        try {
+            await prefsRef.set(
+                { categories: cats.slice() },
+                { merge: true }
+            );
+        } catch (e) { console.warn("Merge save categories:", e); }
+    }
+    refreshAllDisplays();
+    if (msgEl) {
+        msgEl.textContent = "Merged \"" + fromCat + "\" into \"" + intoCat + "\". " + updated + " expense(s) updated.";
+        msgEl.className = "settings-msg success";
+    }
 }
 
 // ============================================================================
@@ -944,7 +1083,7 @@ async function loadPortfolioFromFirestore() {
             var data = doc.data();
             if (data && data.init === true) return;
             var docUserId = (data && data.userId != null) ? String(data.userId).trim() : "";
-            if (docUserId && docUserId !== STOCKS_USER_ID.trim()) return;
+            if (docUserId !== "" && docUserId !== STOCKS_USER_ID.trim()) return;
             var ticker = (data && data.ticker) ? String(data.ticker).toUpperCase() : "—";
             var shares = Number(data && data.shares);
             var avgPrice = Number(data && data.avgPrice);
@@ -1024,6 +1163,40 @@ async function loadPortfolioFromFirestore() {
     }
 }
 
+/** Uses same logic as portfolio list: stocks for user, live prices (fallback avgPrice), sums shares * price. Returns a single number (portfolio total value). Returns 0 if not ready or on error. */
+async function getPortfolioValue() {
+    var total = 0;
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") return 0;
+    try {
+        var snapshot = await db.collection("stocks").orderBy("createdAt", "desc").get();
+        var items = [];
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var docUserId = (data && data.userId != null) ? String(data.userId).trim() : "";
+            if (docUserId !== "" && docUserId !== STOCKS_USER_ID.trim()) return;
+            var ticker = (data && data.ticker) ? String(data.ticker).toUpperCase() : "";
+            var shares = Number(data && data.shares);
+            var avgPrice = Number(data && data.avgPrice);
+            if (isNaN(shares)) shares = 0;
+            if (isNaN(avgPrice)) avgPrice = 0;
+            if (ticker) items.push({ ticker: ticker, shares: shares, avgPrice: avgPrice });
+        });
+        var tickers = items.map(function(i) { return i.ticker; });
+        var livePrices = await getLivePrices(tickers);
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            var livePrice = livePrices[item.ticker] != null ? livePrices[item.ticker] : null;
+            var price = livePrice != null ? livePrice : item.avgPrice;
+            total += item.shares * price;
+        }
+    } catch (err) {
+        console.warn("getPortfolioValue:", err);
+    }
+    return Math.round(total * 100) / 100;
+}
+
 function openEditStockModal(docId, ticker, shares, avgPrice) {
     var modal = document.getElementById("editStockModal");
     var tickerEl = document.getElementById("editStockTicker");
@@ -1097,6 +1270,116 @@ async function handleSaveEditStock() {
     }
 }
 
+function openEditMortgageModal(docId, data) {
+    var modal = document.getElementById("editMortgageModal");
+    if (!modal) return;
+    modal.dataset.editMortgageId = docId;
+    var propertyNameEl = document.getElementById("editMortgagePropertyName");
+    var loanAmountEl = document.getElementById("editMortgageLoanAmount");
+    var interestRateEl = document.getElementById("editMortgageInterestRate");
+    var termYearsEl = document.getElementById("editMortgageTermYears");
+    var monthlyPaymentEl = document.getElementById("editMortgageMonthlyPayment");
+    var remainingBalanceEl = document.getElementById("editMortgageRemainingBalance");
+    var startDateEl = document.getElementById("editMortgageStartDate");
+    var msgEl = document.getElementById("editMortgageMsg");
+    if (propertyNameEl) propertyNameEl.value = data.propertyName || "";
+    if (loanAmountEl) loanAmountEl.value = data.loanAmount != null ? data.loanAmount : "";
+    if (interestRateEl) interestRateEl.value = data.interestRate != null ? data.interestRate : "";
+    if (termYearsEl) termYearsEl.value = data.termYears != null ? data.termYears : "";
+    if (monthlyPaymentEl) monthlyPaymentEl.value = data.monthlyPayment != null ? data.monthlyPayment : "";
+    if (remainingBalanceEl) remainingBalanceEl.value = data.remainingBalance != null ? data.remainingBalance : "";
+    if (startDateEl) startDateEl.value = data.startDateValue || "";
+    if (msgEl) msgEl.textContent = "";
+    modal.classList.add("show");
+    modal.setAttribute("aria-hidden", "false");
+}
+
+function closeEditMortgageModal() {
+    var modal = document.getElementById("editMortgageModal");
+    if (modal) {
+        delete modal.dataset.editMortgageId;
+        modal.classList.remove("show");
+        modal.setAttribute("aria-hidden", "true");
+    }
+    var msgEl = document.getElementById("editMortgageMsg");
+    if (msgEl) msgEl.textContent = "";
+}
+
+async function handleSaveEditMortgage() {
+    var modal = document.getElementById("editMortgageModal");
+    var docId = modal && modal.dataset.editMortgageId;
+    var propertyNameEl = document.getElementById("editMortgagePropertyName");
+    var loanAmountEl = document.getElementById("editMortgageLoanAmount");
+    var interestRateEl = document.getElementById("editMortgageInterestRate");
+    var termYearsEl = document.getElementById("editMortgageTermYears");
+    var monthlyPaymentEl = document.getElementById("editMortgageMonthlyPayment");
+    var remainingBalanceEl = document.getElementById("editMortgageRemainingBalance");
+    var startDateEl = document.getElementById("editMortgageStartDate");
+    var msgEl = document.getElementById("editMortgageMsg");
+    if (!docId || !propertyNameEl || !loanAmountEl || !interestRateEl || !termYearsEl || !monthlyPaymentEl || !remainingBalanceEl || !startDateEl) {
+        if (msgEl) msgEl.textContent = "Cannot save.";
+        return;
+    }
+    var propertyName = String(propertyNameEl.value).trim();
+    var loanAmount = parseFloat(loanAmountEl.value);
+    var interestRate = parseFloat(interestRateEl.value);
+    var termYears = parseInt(termYearsEl.value, 10);
+    var monthlyPayment = parseFloat(monthlyPaymentEl.value);
+    var remainingBalance = parseFloat(remainingBalanceEl.value);
+    var startDateStr = String(startDateEl.value).trim();
+    if (!propertyName) {
+        if (msgEl) msgEl.textContent = "Enter a property name.";
+        return;
+    }
+    if (isNaN(loanAmount) || loanAmount < 0) {
+        if (msgEl) msgEl.textContent = "Enter a valid loan amount.";
+        return;
+    }
+    if (isNaN(interestRate) || interestRate < 0) {
+        if (msgEl) msgEl.textContent = "Enter a valid interest rate.";
+        return;
+    }
+    if (isNaN(termYears) || termYears < 1) {
+        if (msgEl) msgEl.textContent = "Enter a valid term (years).";
+        return;
+    }
+    if (isNaN(monthlyPayment) || monthlyPayment < 0) {
+        if (msgEl) msgEl.textContent = "Enter a valid monthly payment.";
+        return;
+    }
+    if (isNaN(remainingBalance) || remainingBalance < 0) {
+        if (msgEl) msgEl.textContent = "Enter a valid remaining balance.";
+        return;
+    }
+    if (!startDateStr) {
+        if (msgEl) msgEl.textContent = "Enter a start date.";
+        return;
+    }
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") {
+        if (msgEl) msgEl.textContent = "Connection not ready. Try again.";
+        return;
+    }
+    if (msgEl) msgEl.textContent = "Saving…";
+    try {
+        var startDate = firebase.firestore.Timestamp.fromDate(new Date(startDateStr + "T12:00:00"));
+        await db.collection("mortgages").doc(docId).update({
+            propertyName: propertyName,
+            loanAmount: loanAmount,
+            interestRate: interestRate,
+            termYears: termYears,
+            monthlyPayment: monthlyPayment,
+            remainingBalance: remainingBalance,
+            startDate: startDate
+        });
+        closeEditMortgageModal();
+        loadMortgages();
+    } catch (err) {
+        console.warn("mortgages update:", err);
+        if (msgEl) msgEl.textContent = "Could not save. Try again.";
+    }
+}
+
 // ============================================================================
 // MORTGAGE TRACKER — Firestore collection "mortgages": userId, propertyName,
 // loanAmount, interestRate, termYears, monthlyPayment, remainingBalance, startDate
@@ -1159,6 +1442,11 @@ function setupMortgageListener() {
             if (msgEl) msgEl.textContent = "Could not save. Try again.";
         }
     });
+    var simulateBtn = document.getElementById("simulateMonthlyPaymentBtn");
+    if (simulateBtn && simulateBtn.dataset.simulateAttached !== "true") {
+        simulateBtn.dataset.simulateAttached = "true";
+        simulateBtn.addEventListener("click", handleSimulateMonthlyPayment);
+    }
 }
 
 async function addMortgageToFirestore(data) {
@@ -1166,16 +1454,24 @@ async function addMortgageToFirestore(data) {
     if (!ready || !db || typeof db.collection !== "function") {
         throw new Error("Firebase not ready.");
     }
+    var loanAmount = Number(data.loanAmount);
+    var termYears = Number(data.termYears) || 0;
     var startDate = data.startDate ? firebase.firestore.Timestamp.fromDate(new Date(data.startDate + "T12:00:00")) : firebase.firestore.FieldValue.serverTimestamp();
+    var now = new Date();
+    var payoffDate = new Date(now.getFullYear() + termYears, now.getMonth(), now.getDate());
+    var estimatedPayoff = firebase.firestore.Timestamp.fromDate(payoffDate);
     return db.collection("mortgages").add({
         userId: MORTGAGE_USER_ID,
         propertyName: String(data.propertyName),
-        loanAmount: Number(data.loanAmount),
+        loanAmount: loanAmount,
         interestRate: Number(data.interestRate),
-        termYears: Number(data.termYears),
+        termYears: termYears,
         monthlyPayment: Number(data.monthlyPayment),
-        remainingBalance: Number(data.remainingBalance),
-        startDate: startDate
+        remainingBalance: loanAmount,
+        totalPaid: 0,
+        estimatedPayoff: estimatedPayoff,
+        startDate: startDate,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
 }
 
@@ -1194,17 +1490,27 @@ async function loadMortgages() {
             var data = doc.data();
             if (data && data.init === true) return;
             var uid = (data && data.userId != null) ? String(data.userId).trim() : "";
-            if (uid && uid !== MORTGAGE_USER_ID.trim()) return;
+            if (uid !== "" && uid !== MORTGAGE_USER_ID.trim()) return;
             var startDate = data.startDate;
             var startStr = "";
             var startMs = 0;
+            var startDateValue = "";
             if (startDate && typeof startDate.toDate === "function") {
                 try {
                     var d = startDate.toDate();
                     startMs = d.getTime();
                     startStr = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+                    startDateValue = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
                 } catch (e) { startStr = "—"; }
             } else if (startDate) startStr = String(startDate);
+            var totalPaid = Number(data.totalPaid) || 0;
+            var estimatedPayoff = data.estimatedPayoff;
+            var payoffStr = "—";
+            if (estimatedPayoff && typeof estimatedPayoff.toDate === "function") {
+                try {
+                    payoffStr = estimatedPayoff.toDate().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+                } catch (e) {}
+            }
             items.push({
                 id: doc.id,
                 propertyName: (data.propertyName != null) ? String(data.propertyName) : "—",
@@ -1213,8 +1519,11 @@ async function loadMortgages() {
                 termYears: Number(data.termYears) || 0,
                 monthlyPayment: Number(data.monthlyPayment) || 0,
                 remainingBalance: Number(data.remainingBalance) || 0,
+                totalPaid: totalPaid,
                 startStr: startStr || "—",
-                startMs: startMs
+                startMs: startMs,
+                startDateValue: startDateValue,
+                payoffStr: payoffStr
             });
         });
         items.sort(function(a, b) { return b.startMs - a.startMs; });
@@ -1228,18 +1537,349 @@ async function loadMortgages() {
             details.appendChild(strong);
             var line1 = document.createElement("div");
             line1.className = "mortgage-item-line";
-            line1.textContent = "Loan £" + item.loanAmount.toFixed(2) + " · " + item.interestRate + "% · " + item.termYears + " yrs";
+            line1.textContent = "Original loan £" + item.loanAmount.toFixed(2) + " · Remaining £" + item.remainingBalance.toFixed(2);
             details.appendChild(line1);
             var line2 = document.createElement("div");
             line2.className = "mortgage-item-line";
-            line2.textContent = "Monthly £" + item.monthlyPayment.toFixed(2) + " · Remaining £" + item.remainingBalance.toFixed(2) + " · From " + item.startStr;
+            line2.textContent = "Monthly £" + item.monthlyPayment.toFixed(2) + " · Total paid £" + item.totalPaid.toFixed(2);
             details.appendChild(line2);
+            var line3 = document.createElement("div");
+            line3.className = "mortgage-item-line";
+            line3.textContent = "Estimated payoff " + item.payoffStr;
+            details.appendChild(line3);
             li.appendChild(details);
+            var editBtn = document.createElement("button");
+            editBtn.type = "button";
+            editBtn.className = "portfolio-edit-btn mortgage-edit-btn";
+            editBtn.setAttribute("aria-label", "Edit " + item.propertyName);
+            editBtn.textContent = "Edit";
+            editBtn.dataset.id = item.id;
+            editBtn.dataset.propertyName = item.propertyName;
+            editBtn.dataset.loanAmount = String(item.loanAmount);
+            editBtn.dataset.interestRate = String(item.interestRate);
+            editBtn.dataset.termYears = String(item.termYears);
+            editBtn.dataset.monthlyPayment = String(item.monthlyPayment);
+            editBtn.dataset.remainingBalance = String(item.remainingBalance);
+            editBtn.dataset.startDateValue = item.startDateValue || "";
+            editBtn.addEventListener("click", function() {
+                openEditMortgageModal(editBtn.dataset.id, {
+                    propertyName: editBtn.dataset.propertyName,
+                    loanAmount: editBtn.dataset.loanAmount,
+                    interestRate: editBtn.dataset.interestRate,
+                    termYears: editBtn.dataset.termYears,
+                    monthlyPayment: editBtn.dataset.monthlyPayment,
+                    remainingBalance: editBtn.dataset.remainingBalance,
+                    startDateValue: editBtn.dataset.startDateValue
+                });
+            });
+            li.appendChild(editBtn);
             listEl.appendChild(li);
         });
         if (emptyEl) emptyEl.style.display = items.length > 0 ? "none" : "block";
     } catch (err) {
         console.warn("loadMortgages:", err);
+    }
+}
+
+/** Simulate one monthly payment for all user mortgages: reduce remainingBalance by monthlyPayment (min 0), increase totalPaid by monthlyPayment; update Firestore and refresh list. */
+async function handleSimulateMonthlyPayment() {
+    var msgEl = document.getElementById("mortgageFormMsg");
+    var btn = document.getElementById("simulateMonthlyPaymentBtn");
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") {
+        if (msgEl) msgEl.textContent = "Connection not ready. Try again.";
+        return;
+    }
+    if (btn) {
+        btn.disabled = true;
+        if (msgEl) msgEl.textContent = "Simulating…";
+    }
+    try {
+        var snapshot = await db.collection("mortgages").get();
+        var uidTrim = MORTGAGE_USER_ID.trim();
+        var updates = [];
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var uid = (data && data.userId != null) ? String(data.userId).trim() : "";
+            if (uid && uid !== uidTrim) return;
+            var monthlyPayment = Number(data.monthlyPayment) || 0;
+            var remaining = Number(data.remainingBalance) || 0;
+            var totalPaid = Number(data.totalPaid) || 0;
+            var newRemaining = Math.max(0, remaining - monthlyPayment);
+            var newTotalPaid = totalPaid + monthlyPayment;
+            updates.push({ id: doc.id, remainingBalance: newRemaining, totalPaid: newTotalPaid });
+        });
+        for (var i = 0; i < updates.length; i++) {
+            await db.collection("mortgages").doc(updates[i].id).update({
+                remainingBalance: updates[i].remainingBalance,
+                totalPaid: updates[i].totalPaid
+            });
+        }
+        if (msgEl) msgEl.textContent = updates.length > 0 ? "Simulated. List updated." : "No mortgages to simulate.";
+        loadMortgages();
+        updateNetWorthDisplay().catch(function(e) { console.warn("updateNetWorthDisplay after simulate:", e); });
+    } catch (err) {
+        console.warn("handleSimulateMonthlyPayment:", err);
+        if (msgEl) msgEl.textContent = "Could not simulate. Try again.";
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+/** Queries mortgages for userId = "user_1", sums remainingBalance, returns { totalMortgageDebt }. Returns { totalMortgageDebt: 0 } if not ready or on error. */
+async function getTotalMortgageBalance() {
+    var totalMortgageDebt = 0;
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") {
+        return { totalMortgageDebt: totalMortgageDebt };
+    }
+    try {
+        var snapshot = await db.collection("mortgages").get();
+        var uidTrim = MORTGAGE_USER_ID.trim();
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var uid = (data && data.userId != null) ? String(data.userId).trim() : "";
+            if (uid && uid !== uidTrim) return;
+            totalMortgageDebt += Number(data.remainingBalance) || 0;
+        });
+    } catch (err) {
+        console.warn("getTotalMortgageBalance:", err);
+    }
+    return { totalMortgageDebt: totalMortgageDebt };
+}
+
+// ============================================================================
+// AI BUDGET ASSISTANT — Firestore collection "aiInsights"
+// Schema: userId (string), month (YYYY-MM), summary (string, AI-generated),
+//         recommendations (array of strings, bullet points), createdAt (serverTimestamp).
+// ============================================================================
+
+/**
+ * Returns the saved AI insight for a given user and month, if any. Use this to avoid regenerating every time.
+ * @param {string} userId - User identifier
+ * @param {string} month - YYYY-MM
+ * @returns {Promise<{ summary: string, recommendations: string[] }|null>} Saved insight or null
+ */
+async function getAiInsightForMonth(userId, month) {
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") return null;
+    try {
+        var snapshot = await db.collection("aiInsights")
+            .where("userId", "==", String(userId))
+            .where("month", "==", String(month))
+            .get();
+        var latest = null;
+        var latestMs = 0;
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var created = data.createdAt && data.createdAt.toMillis ? data.createdAt.toMillis() : 0;
+            if (created > latestMs) {
+                latestMs = created;
+                latest = { summary: data.summary != null ? String(data.summary) : "", recommendations: Array.isArray(data.recommendations) ? data.recommendations : [] };
+            }
+        });
+        return latest;
+    } catch (err) {
+        console.warn("getAiInsightForMonth:", err);
+        return null;
+    }
+}
+
+/**
+ * Saves an AI-generated budget insight to Firestore. Call when you have summary and recommendations.
+ * Saving for the current month means getAiInsightForMonth() will return it next time (no need to regenerate).
+ * @param {string} userId - User identifier
+ * @param {string} month - YYYY-MM
+ * @param {string} summary - AI-generated summary text
+ * @param {string[]} recommendations - Array of bullet-point strings
+ * @returns {Promise<string|null>} Document id or null on error
+ */
+async function saveAiInsight(userId, month, summary, recommendations) {
+    var ready = await ensureFirebaseReady();
+    if (!ready || !db || typeof db.collection !== "function") return null;
+    try {
+        var rec = Array.isArray(recommendations) ? recommendations : [];
+        var docRef = await db.collection("aiInsights").add({
+            userId: String(userId),
+            month: String(month),
+            summary: summary != null ? String(summary) : "",
+            recommendations: rec,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        return docRef.id;
+    } catch (err) {
+        console.warn("saveAiInsight:", err);
+        return null;
+    }
+}
+
+/**
+ * Gathers budget data and builds a structured prompt for the AI. Before calling this, use
+ * getAiInsightForMonth(userId, month) — if it returns an insight, use it and skip regeneration.
+ * After your AI returns, parse into summary + recommendations and call saveAiInsight() for the
+ * current month so the insight is cached and does not regenerate every time.
+ * @param {string} [userId] - User id (e.g. "user_1")
+ * @returns {Promise<{ prompt: string, data: object }>} prompt string and the numbers used
+ */
+async function generateBudgetInsights(userId) {
+    var uid = userId != null ? String(userId) : "user_1";
+    var now = new Date();
+    var monthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+
+    var totalIncomeThisMonth = 0;
+    var totalExpensesThisMonth = 0;
+    var totalMortgageDebt = 0;
+    var portfolioValue = 0;
+
+    try {
+        totalIncomeThisMonth = await getTotalEarningsThisMonth();
+    } catch (e) { console.warn("generateBudgetInsights getTotalEarningsThisMonth:", e); }
+    try {
+        totalExpensesThisMonth = await getTotalExpensesThisMonth();
+    } catch (e) { console.warn("generateBudgetInsights getTotalExpensesThisMonth:", e); }
+    try {
+        var mortgageResult = await getTotalMortgageBalance();
+        totalMortgageDebt = mortgageResult.totalMortgageDebt || 0;
+    } catch (e) { console.warn("generateBudgetInsights getTotalMortgageBalance:", e); }
+    try {
+        portfolioValue = await getPortfolioValue();
+    } catch (e) { console.warn("generateBudgetInsights getPortfolioValue:", e); }
+
+    var data = {
+        userId: uid,
+        month: monthStr,
+        totalIncomeThisMonth: totalIncomeThisMonth,
+        totalExpensesThisMonth: totalExpensesThisMonth,
+        totalMortgageDebt: totalMortgageDebt,
+        portfolioValue: portfolioValue
+    };
+
+    var prompt = [
+        "You are a budget assistant. Analyse this user's financial snapshot and respond in exactly this format:",
+        "",
+        "1. SHORT SUMMARY: Write 2–3 sentences on their overall position (income vs expenses, debt, savings).",
+        "2. RECOMMENDATIONS: Give 3–5 actionable bullet points. Use concrete formats, e.g.:",
+        "   - \"Save X% of income\" (suggest a percentage)",
+        "   - \"Reduce category Y by £Z\" (name a category and amount)",
+        "   - \"You are overspending in category A\" or \"You are underspending in category A\" (name the category)",
+        "   Use £ for currency. Be specific with numbers and category names where possible.",
+        "",
+        "Financial data for " + monthStr + " (user: " + uid + "):",
+        "- Total income this month (from hourly tracker): £" + totalIncomeThisMonth.toFixed(2),
+        "- Total expenses this month: £" + totalExpensesThisMonth.toFixed(2),
+        "- Total mortgage debt (remaining balance): £" + totalMortgageDebt.toFixed(2),
+        "- Portfolio value (investments): £" + portfolioValue.toFixed(2),
+        "",
+        "Respond with only: (1) the short summary paragraph, then (2) the bullet list of 3–5 recommendations."
+    ].join("\n");
+
+    return { prompt: prompt, data: data };
+}
+
+/** User id used for AI insights (same pattern as other trackers). */
+var AI_INSIGHTS_USER_ID = "user_1";
+/** User id for notifications collection (same as other features). */
+var NOTIFICATIONS_USER_ID = "user_1";
+
+/**
+ * Parses raw AI response text into { summary, recommendations }.
+ * Expects summary paragraph(s) then bullet lines (starting with -, *, •, or "n.").
+ */
+function parseAiInsightResponse(text) {
+    var summary = "";
+    var recommendations = [];
+    if (typeof text !== "string" || !text.trim()) return { summary: summary, recommendations: recommendations };
+    var t = text.trim();
+    var recStart = t.search(/\n\s*[-*•]\s|\n\s*\d+[.)]\s|Recommendations?:/i);
+    if (recStart >= 0) {
+        summary = t.slice(0, recStart).trim().replace(/\n+/g, " ");
+        var recBlock = t.slice(recStart).replace(/^[\s\S]*?(Recommendations?:\s*)?/i, "").trim();
+        recBlock.split(/\n/).forEach(function(line) {
+            var m = line.replace(/^\s*[-*•]\s*|\s*\d+[.)]\s*/, "").trim();
+            if (m) recommendations.push(m);
+        });
+    } else {
+        summary = t.replace(/\n+/g, " ");
+    }
+    return { summary: summary, recommendations: recommendations };
+}
+
+/** Loads saved insight for current month into the AI Budget Assistant panel. */
+async function loadAiInsightPanel() {
+    var summaryEl = document.getElementById("aiInsightSummary");
+    var listEl = document.getElementById("aiInsightRecommendations");
+    var msgEl = document.getElementById("aiInsightMessage");
+    if (!summaryEl || !listEl) return;
+    var now = new Date();
+    var monthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    try {
+        var insight = await getAiInsightForMonth(AI_INSIGHTS_USER_ID, monthStr);
+        if (insight && (insight.summary || (insight.recommendations && insight.recommendations.length > 0))) {
+            summaryEl.textContent = insight.summary || "No summary.";
+            listEl.innerHTML = "";
+            (insight.recommendations || []).forEach(function(r) {
+                var li = document.createElement("li");
+                li.textContent = r;
+                listEl.appendChild(li);
+            });
+            if (msgEl) msgEl.textContent = "";
+        } else {
+            summaryEl.textContent = "No insights yet. Click Refresh to generate.";
+            listEl.innerHTML = "";
+            if (msgEl) msgEl.textContent = "";
+        }
+    } catch (e) {
+        console.warn("loadAiInsightPanel:", e);
+        summaryEl.textContent = "No insights yet. Click Refresh to generate.";
+        listEl.innerHTML = "";
+        if (msgEl) msgEl.textContent = "Could not load insights.";
+    }
+}
+
+/**
+ * Called when user clicks Refresh Insights. Generates prompt, gets AI response (or mock),
+ * parses, saves to aiInsights, then refreshes the panel. Set window.callBudgetAI(prompt) to
+ * return your AI response string to use a real API.
+ */
+async function handleRefreshInsights() {
+    var btn = document.getElementById("refreshInsightsBtn");
+    var msgEl = document.getElementById("aiInsightMessage");
+    if (msgEl) msgEl.textContent = "Generating…";
+    if (btn) btn.disabled = true;
+    var now = new Date();
+    var monthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    try {
+        var result = await generateBudgetInsights(AI_INSIGHTS_USER_ID);
+        var prompt = result.prompt;
+        var data = result.data;
+        var rawResponse;
+        if (typeof window.callBudgetAI === "function") {
+            rawResponse = await window.callBudgetAI(prompt);
+        } else {
+            rawResponse = "Your income this month is £" + data.totalIncomeThisMonth.toFixed(2) + " and expenses are £" + data.totalExpensesThisMonth.toFixed(2) + ". Mortgage debt is £" + data.totalMortgageDebt.toFixed(2) + " and portfolio value is £" + data.portfolioValue.toFixed(2) + ".\n\nRecommendations:\n- Save 10–20% of income if possible.\n- Reduce discretionary spending by £50–100 this month.\n- Review category with highest spend and trim where you can.";
+        }
+        var parsed = parseAiInsightResponse(rawResponse);
+        var docId = await saveAiInsight(AI_INSIGHTS_USER_ID, monthStr, parsed.summary, parsed.recommendations);
+        await loadAiInsightPanel();
+        if (msgEl) msgEl.textContent = docId ? "Insights updated." : "Saved locally.";
+    } catch (e) {
+        console.warn("handleRefreshInsights:", e);
+        if (msgEl) msgEl.textContent = "Could not generate. Try again.";
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+/** Wires the AI Budget Assistant panel: load existing insight and Refresh button. */
+function setupAiBudgetAssistantListener() {
+    loadAiInsightPanel().catch(function(e) { console.warn("loadAiInsightPanel on setup:", e); });
+    var btn = document.getElementById("refreshInsightsBtn");
+    if (btn && btn.dataset.aiAssistantWired !== "true") {
+        btn.dataset.aiAssistantWired = "true";
+        btn.addEventListener("click", function() { handleRefreshInsights(); });
     }
 }
 
@@ -1269,6 +1909,18 @@ function setupFormListeners(elements) {
     if (elements.typeInput) {
         elements.typeInput.addEventListener("change", toggleBillScheduleVisibility);
         toggleBillScheduleVisibility();
+    }
+
+    // Auto-categorise: when user types in notes, suggest category if none selected
+    if (elements.notesInput && elements.categoryInput) {
+        function applySuggestedCategory() {
+            if (!elements.categoryInput.value || elements.categoryInput.value === "") {
+                var suggested = suggestCategoryFromDescription(elements.notesInput.value);
+                elements.categoryInput.value = suggested;
+            }
+        }
+        elements.notesInput.addEventListener("blur", applySuggestedCategory);
+        elements.notesInput.addEventListener("input", applySuggestedCategory);
     }
     
     // Real-time form validation for submit button
@@ -1313,6 +1965,7 @@ async function handleFormSubmit(elements, event) {
         if (errorEl) { errorEl.textContent = ""; errorEl.style.display = "none"; }
         elements.form.reset();
         refreshAllDisplays();
+        runNotificationChecks().catch(function(e) { console.warn("runNotificationChecks after add:", e); });
     } catch (error) {
         console.error("❌ Error in handleFormSubmit:", error);
         if (errorEl) {
@@ -1320,6 +1973,35 @@ async function handleFormSubmit(elements, event) {
             errorEl.style.display = "block";
         }
     }
+}
+
+/**
+ * Assigns a category based on description (and optionally amount) using keyword matching.
+ * Returns one of: "Food", "Transport", "Rent / Mortgage", "Bills", "Subscriptions", "Shopping", "Other".
+ */
+function categoriseExpense(description, amount) {
+    if (typeof description !== "string" || !description.trim()) return "Other";
+    var t = description.trim().toLowerCase();
+    if (/\b(food|tesco|lidl|aldi|restaurant|uber eats|deliveroo|coffee|grocer|supermarket|takeaway|meal|bread|milk|cafe)\b/i.test(t)) return "Food";
+    if (/\b(transport|uber|train|bus|fuel|petrol|parking|taxi|car|mot)\b/i.test(t)) return "Transport";
+    if (/\b(rent|landlord|mortgage|housing)\b/i.test(t)) return "Rent / Mortgage";
+    if (/\b(electricity|electric|gas|water|internet|phone|bill|broadband)\b/i.test(t)) return "Bills";
+    if (/\b(netflix|spotify|apple|google|adobe|subscription)\b/i.test(t)) return "Subscriptions";
+    if (/\b(shopping|amazon|clothes|fashion|store)\b/i.test(t)) return "Shopping";
+    return "Other";
+}
+
+/**
+ * Suggests a category from expense description/notes. Uses categoriseExpense and maps to
+ * existing form dropdown values (Food, transport, housing, Bills, Other) so the UI is unchanged.
+ */
+function suggestCategoryFromDescription(text) {
+    var cat = categoriseExpense(text, undefined);
+    if (cat === "Transport") return "transport";
+    if (cat === "Rent / Mortgage") return "housing";
+    if (cat === "Subscriptions") return "Bills";
+    if (cat === "Shopping") return "Other";
+    return cat;
 }
 
 /**
@@ -1390,11 +2072,13 @@ function validateFormData(formData) {
 function createExpenseObject(formData) {
     var typeVal = formData.type === "bill" ? "bill" : "spending";
     var billSched = (typeVal === "bill" && formData.billSchedule === "recurring") ? "recurring" : "single";
+    var cat = (formData.category != null && String(formData.category).trim()) ? String(formData.category).trim() : suggestCategoryFromDescription(formData.name || "");
     return {
         note: formData.name,
+        description: formData.name,
         amount: formData.amount,
         date: formData.date,
-        category: formData.category,
+        category: cat || "Other",
         type: typeVal,
         billSchedule: billSched
     };
@@ -1505,11 +2189,16 @@ async function addExpense(expense) {
                     : firebase.firestore.FieldValue.serverTimestamp();
                 var expenseType = (expense.type === "bill" || expense.type === "spending") ? expense.type : "spending";
                 var billSched = (expenseType === "bill" && (expense.billSchedule === "recurring" || expense.billSchedule === "single")) ? expense.billSchedule : "single";
+                var desc = expense.description != null ? String(expense.description) : (expense.note != null ? String(expense.note) : "");
+                var cat = (expense.category != null && String(expense.category).trim()) ? String(expense.category).trim() : suggestCategoryFromDescription(expense.note || expense.description || "");
+                if (!cat) cat = "Other";
+                expense.category = cat;
                 const firestoreData = {
                     amount: expense.amount,
-                    category: expense.category,
-                    note: expense.note,
+                    description: desc,
                     date: dateTimestamp,
+                    category: cat,
+                    note: expense.note,
                     type: expenseType,
                     billSchedule: billSched,
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -1521,11 +2210,17 @@ async function addExpense(expense) {
                 // If recurring bill, add to recurring_bills and link
                 if (expenseType === "bill" && billSched === "recurring") {
                     try {
+                        var dueDay = 1;
+                        if (expense.date && typeof expense.date === "string" && expense.date.length >= 10) {
+                            var d = parseInt(expense.date.slice(8, 10), 10);
+                            if (!isNaN(d) && d >= 1 && d <= 31) dueDay = d;
+                        }
                         var rbRef = await db.collection("recurring_bills").add({
                             amount: expense.amount,
                             note: expense.note || "",
                             name: expense.note || "",
                             expenseId: expense.id,
+                            dueDayOfMonth: dueDay,
                             createdAt: firebase.firestore.FieldValue.serverTimestamp()
                         });
                         expense.recurringBillId = rbRef.id;
@@ -1765,6 +2460,22 @@ function setupButtonListeners(elements) {
             }
         });
     }
+    var incomeVsSection = document.getElementById("incomeVsExpensesChartSection");
+    var incomeVsToggleBtn = document.getElementById("toggleIncomeVsExpensesChartBtn");
+    if (incomeVsToggleBtn && incomeVsSection) {
+        incomeVsToggleBtn.addEventListener("click", function() {
+            var willShow = !incomeVsSection.classList.contains("chart-visible");
+            incomeVsSection.classList.toggle("chart-visible", willShow);
+            incomeVsToggleBtn.textContent = willShow ? "Hide Income vs Expenses" : "Show Income vs Expenses";
+            if (willShow) {
+                requestAnimationFrame(function() {
+                    requestAnimationFrame(function() {
+                        renderIncomeVsExpensesChart().catch(function(e) { console.warn("renderIncomeVsExpensesChart:", e); });
+                    });
+                });
+            }
+        });
+    }
 
     // Expense list toggle (dropdown-style)
     if (elements.toggleExpenseListBtn && elements.expenseList) {
@@ -1807,14 +2518,15 @@ function setupNavigationListeners(elements) {
     };
     
     elements.homeTab.addEventListener("click", (e) => handleTabClick(e, "home"));
+    if (elements.expensesTab) elements.expensesTab.addEventListener("click", (e) => handleTabClick(e, "expenses"));
     elements.historyTab.addEventListener("click", (e) => handleTabClick(e, "history"));
     if (elements.stocksTab) elements.stocksTab.addEventListener("click", (e) => handleTabClick(e, "stocks"));
     if (elements.mortgageTab) elements.mortgageTab.addEventListener("click", (e) => handleTabClick(e, "mortgage"));
     
-    // Fallback for tabs that don't have an explicit listener (e.g. hourly)
+    // Fallback for tabs that don't have an explicit listener (e.g. hourly, settings)
     const navTabs = document.querySelectorAll('.nav-tab[data-page]');
     navTabs.forEach(tab => {
-        if (tab.id === "homeTab" || tab.id === "historyTab" || tab.id === "stocksTab" || tab.id === "mortgageTab") return;
+        if (tab.id === "homeTab" || tab.id === "expensesTab" || tab.id === "historyTab" || tab.id === "stocksTab" || tab.id === "mortgageTab") return;
         const pageName = tab.getAttribute('data-page');
         if (pageName && !tab.hasAttribute('data-listener-added')) {
             tab.setAttribute('data-listener-added', 'true');
@@ -1825,10 +2537,36 @@ function setupNavigationListeners(elements) {
             });
         }
     });
+
+    var addHoldingLink = document.getElementById("dashboardAddHoldingLink");
+    if (addHoldingLink) addHoldingLink.addEventListener("click", function(e) { e.preventDefault(); switchPage("stocks", elements); });
+    var addMortgageLink = document.getElementById("dashboardAddMortgageLink");
+    if (addMortgageLink) addMortgageLink.addEventListener("click", function(e) { e.preventDefault(); switchPage("mortgage", elements); });
     
+    setupHomeDetailsToggle();
     console.log("✅ Navigation listeners set up");
     console.log("Home tab element:", elements.homeTab);
     console.log("History tab element:", elements.historyTab);
+}
+
+function setupHomeDetailsToggle() {
+    var btn = document.getElementById("homeDetailsToggle");
+    var content = document.getElementById("homeDetailsContent");
+    if (!btn || !content) return;
+    if (btn._homeDetailsBound) return;
+    btn._homeDetailsBound = true;
+    btn.addEventListener("click", function() {
+        var isHidden = content.hasAttribute("hidden");
+        if (isHidden) {
+            content.removeAttribute("hidden");
+            btn.setAttribute("aria-expanded", "true");
+            btn.textContent = "Show less";
+        } else {
+            content.setAttribute("hidden", "");
+            btn.setAttribute("aria-expanded", "false");
+            btn.textContent = "View details";
+        }
+    });
 }
 
 function formatElapsedHMS(seconds) {
@@ -1893,44 +2631,318 @@ function getWorkingDaysInCurrentMonth(date) {
 }
 
 var USER_SETTINGS_HOURLY_DOC_ID = "hourly";
+var USER_SETTINGS_PREFERENCES_DOC_ID = "preferences";
+/** Current user id for Firestore paths; settings stored under users/{uid}/user_settings (v9 modular compatible). */
+var CURRENT_USER_ID = "user_1";
 
 /**
- * user_settings/hourly doc: { hourlyRate: number, savingsPercent: number }
+ * Returns Firestore doc reference for the user's settings (users/{uid}/user_settings/{docId}). Use for get/set so all settings live under the user document.
+ * @param {string} docId - e.g. USER_SETTINGS_HOURLY_DOC_ID or USER_SETTINGS_PREFERENCES_DOC_ID
+ * @returns {FirebaseFirestore.DocumentReference|null}
  */
+function getUserSettingsDocRef(docId) {
+    if (!db || typeof db.collection !== "function") return null;
+    return db.collection("users").doc(CURRENT_USER_ID).collection("user_settings").doc(docId);
+}
+
+/** Default expense category options; can be overridden by user in Settings. */
+var DEFAULT_EXPENSE_CATEGORIES = ["Food", "transport", "housing", "Bills", "Other"];
+/** In-memory app preferences (loaded from users/{uid}/user_settings). */
+var appPreferences = {
+    monthlyBudget: 0,
+    savingsRate: 0,
+    riskLevel: "Balanced",
+    defaultHourlyRate: 0,
+    incomeSource: "both",
+    notifyOverspend: true,
+    notifyBillReminder: true,
+    notifySavingsSuggestion: true,
+    notifyIncomeMilestone: true,
+    currency: "GBP",
+    dateFormat: "DD/MM/YYYY",
+    categories: DEFAULT_EXPENSE_CATEGORIES.slice()
+};
+
+/**
+ * users/{uid}/user_settings/hourly: { hourlyRate, savingsPercent, monthlyBudget }
+     */
 async function loadUserSettingsHourlyRate() {
     var inputEl = document.getElementById("hourlyRateInput");
     var savingsInputEl = document.getElementById("savingsPercentInput");
+    var monthlyBudgetInputEl = document.getElementById("monthlyBudgetInput");
     if (!inputEl) return;
-    if (!db || typeof db.collection !== "function") return;
+    var ref = getUserSettingsDocRef(USER_SETTINGS_HOURLY_DOC_ID);
+    if (!ref) return;
     try {
-        var doc = await db.collection("user_settings").doc(USER_SETTINGS_HOURLY_DOC_ID).get();
+        var doc = await ref.get();
         var rate = 0;
         var savingsPercent = 0;
+        var monthlyBudget = 0;
         if (doc.exists && doc.data()) {
             var data = doc.data();
             rate = Number(data.hourlyRate);
             if (isNaN(rate)) rate = 0;
             savingsPercent = Number(data.savingsPercent);
             if (isNaN(savingsPercent) || savingsPercent < 0 || savingsPercent > 100) savingsPercent = 0;
+            monthlyBudget = Number(data.monthlyBudget);
+            if (isNaN(monthlyBudget) || monthlyBudget < 0) monthlyBudget = 0;
         }
         currentHourlyRate = rate;
         currentSavingsPercent = savingsPercent;
         inputEl.value = rate > 0 ? rate.toFixed(2) : "";
         if (savingsInputEl) savingsInputEl.value = savingsPercent > 0 ? String(savingsPercent) : "";
+        if (monthlyBudgetInputEl) monthlyBudgetInputEl.value = monthlyBudget > 0 ? monthlyBudget.toFixed(2) : "";
     } catch (err) {
         console.warn("loadUserSettingsHourlyRate error:", err);
     }
 }
 
 /**
+ * Loads app preferences from Firestore users/{uid}/user_settings (hourly + preferences). Syncs appPreferences; keeps monthlyBudget, savingsRate, defaultHourlyRate in sync.
+ */
+async function loadAppPreferences() {
+    var hourlyRef = getUserSettingsDocRef(USER_SETTINGS_HOURLY_DOC_ID);
+    var prefsRef = getUserSettingsDocRef(USER_SETTINGS_PREFERENCES_DOC_ID);
+    if (!hourlyRef || !prefsRef) return;
+    try {
+        var hourlyDoc = await hourlyRef.get();
+        if (hourlyDoc.exists && hourlyDoc.data()) {
+            var h = hourlyDoc.data();
+            appPreferences.monthlyBudget = Math.max(0, Number(h.monthlyBudget) || 0);
+            appPreferences.savingsRate = Math.max(0, Math.min(100, Number(h.savingsPercent) || 0));
+            appPreferences.defaultHourlyRate = Math.max(0, Number(h.hourlyRate) || 0);
+        }
+        var prefsDoc = await prefsRef.get();
+        if (prefsDoc.exists && prefsDoc.data()) {
+            var p = prefsDoc.data();
+            if (p.riskLevel === "Conservative" || p.riskLevel === "Balanced" || p.riskLevel === "Growth") appPreferences.riskLevel = p.riskLevel;
+            if (p.incomeSource === "tracker" || p.incomeSource === "manual" || p.incomeSource === "both") appPreferences.incomeSource = p.incomeSource;
+            appPreferences.notifyOverspend = p.notifyOverspend !== false;
+            appPreferences.notifyBillReminder = p.notifyBillReminder !== false;
+            appPreferences.notifySavingsSuggestion = p.notifySavingsSuggestion !== false;
+            appPreferences.notifyIncomeMilestone = p.notifyIncomeMilestone !== false;
+            if (p.currency === "EUR" || p.currency === "GBP" || p.currency === "USD") appPreferences.currency = p.currency;
+            if (p.dateFormat === "DD/MM/YYYY" || p.dateFormat === "MM/DD/YYYY" || p.dateFormat === "YYYY-MM-DD") appPreferences.dateFormat = p.dateFormat;
+            if (Array.isArray(p.categories) && p.categories.length > 0) appPreferences.categories = p.categories.slice();
+        }
+    } catch (err) {
+        console.warn("loadAppPreferences error:", err);
+    }
+}
+
+/** Returns currency symbol from appPreferences (€ £ $). */
+function getCurrencySymbol() {
+    if (appPreferences.currency === "EUR") return "€";
+    if (appPreferences.currency === "USD") return "$";
+    return "£";
+}
+
+/**
+ * Loads the Settings page: fetches preferences and fills the form (financial, income, notifications, categories, display).
+ */
+async function loadSettingsPage() {
+    await loadAppPreferences();
+    var budgetEl = document.getElementById("settingsMonthlyBudget");
+    var savingsEl = document.getElementById("settingsSavingsRate");
+    var riskEl = document.getElementById("settingsRiskLevel");
+    var hourlyEl = document.getElementById("settingsHourlyRate");
+    var incomeSourceEl = document.getElementById("settingsIncomeSource");
+    var currencyEl = document.getElementById("settingsCurrency");
+    var dateFormatEl = document.getElementById("settingsDateFormat");
+    var budgetLabel = document.getElementById("settingsMonthlyBudgetLabel");
+    if (budgetLabel) budgetLabel.textContent = "Monthly budget (" + getCurrencySymbol() + ")";
+    if (budgetEl) budgetEl.value = appPreferences.monthlyBudget > 0 ? appPreferences.monthlyBudget.toFixed(2) : "";
+    if (savingsEl) savingsEl.value = appPreferences.savingsRate > 0 ? String(appPreferences.savingsRate) : "";
+    if (riskEl) riskEl.value = appPreferences.riskLevel;
+    if (hourlyEl) hourlyEl.value = appPreferences.defaultHourlyRate > 0 ? appPreferences.defaultHourlyRate.toFixed(2) : "";
+    if (incomeSourceEl) incomeSourceEl.value = appPreferences.incomeSource;
+    if (currencyEl) currencyEl.value = appPreferences.currency;
+    if (dateFormatEl) dateFormatEl.value = appPreferences.dateFormat;
+    var overspendEl = document.getElementById("settingsNotifyOverspend");
+    var billEl = document.getElementById("settingsNotifyBillReminder");
+    var savingsSugEl = document.getElementById("settingsNotifySavingsSuggestion");
+    var milestoneEl = document.getElementById("settingsNotifyIncomeMilestone");
+    if (overspendEl) overspendEl.checked = appPreferences.notifyOverspend;
+    if (billEl) billEl.checked = appPreferences.notifyBillReminder;
+    if (savingsSugEl) savingsSugEl.checked = appPreferences.notifySavingsSuggestion;
+    if (milestoneEl) milestoneEl.checked = appPreferences.notifyIncomeMilestone;
+    renderSettingsCategoriesList();
+    populateSettingsMergeDropdowns();
+}
+
+/**
+ * Fills the merge dropdowns (From / Into) from appPreferences.categories.
+ */
+function populateSettingsMergeDropdowns() {
+    var fromEl = document.getElementById("settingsMergeFrom");
+    var intoEl = document.getElementById("settingsMergeInto");
+    var cats = (appPreferences.categories && appPreferences.categories.length) ? appPreferences.categories : DEFAULT_EXPENSE_CATEGORIES;
+    function fillSelect(sel, placeholder) {
+        if (!sel) return;
+        sel.innerHTML = "";
+        var first = document.createElement("option");
+        first.value = "";
+        first.textContent = placeholder;
+        sel.appendChild(first);
+        cats.forEach(function(c) {
+            var opt = document.createElement("option");
+            opt.value = c;
+            opt.textContent = c;
+            sel.appendChild(opt);
+        });
+    }
+    fillSelect(fromEl, "— From —");
+    fillSelect(intoEl, "— Into —");
+}
+
+/**
+ * Renders the expense categories list on the Settings page (add/rename).
+ */
+function renderSettingsCategoriesList() {
+    var container = document.getElementById("settingsCategoriesList");
+    if (!container) return;
+    container.innerHTML = "";
+    (appPreferences.categories || []).forEach(function(name, index) {
+        var row = document.createElement("div");
+        row.className = "settings-category-row";
+        var label = document.createElement("span");
+        label.className = "settings-category-name";
+        label.textContent = name;
+        var renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.className = "settings-btn-secondary settings-category-rename";
+        renameBtn.textContent = "Rename";
+        renameBtn.dataset.index = String(index);
+        renameBtn.dataset.currentName = name;
+        renameBtn.addEventListener("click", function() {
+            var newName = prompt("New name for category \"" + name + "\":", name);
+            if (newName != null && newName.trim()) {
+                appPreferences.categories[index] = newName.trim();
+                renderSettingsCategoriesList();
+            }
+        });
+        row.appendChild(label);
+        row.appendChild(renameBtn);
+        container.appendChild(row);
+    });
+}
+
+/**
+ * Saves Settings form to Firestore (hourly + preferences) and updates app state.
+ */
+async function saveSettingsFromForm(ev) {
+    if (ev) ev.preventDefault();
+    var msgEl = document.getElementById("settingsMsg");
+    var budgetEl = document.getElementById("settingsMonthlyBudget");
+    var savingsEl = document.getElementById("settingsSavingsRate");
+    var riskEl = document.getElementById("settingsRiskLevel");
+    var hourlyEl = document.getElementById("settingsHourlyRate");
+    var incomeSourceEl = document.getElementById("settingsIncomeSource");
+    var currencyEl = document.getElementById("settingsCurrency");
+    var dateFormatEl = document.getElementById("settingsDateFormat");
+    var monthlyBudget = 0;
+    if (budgetEl) { var b = parseFloat(budgetEl.value); if (!isNaN(b) && b >= 0) monthlyBudget = b; }
+    var savingsRate = 0;
+    if (savingsEl) { var s = parseFloat(savingsEl.value); if (!isNaN(s) && s >= 0) savingsRate = Math.min(100, s); }
+    var riskLevel = (riskEl && riskEl.value) ? riskEl.value : "Balanced";
+    if (riskLevel !== "Conservative" && riskLevel !== "Balanced" && riskLevel !== "Growth") riskLevel = "Balanced";
+    var defaultHourlyRate = 0;
+    if (hourlyEl) { var h = parseFloat(hourlyEl.value); if (!isNaN(h) && h >= 0) defaultHourlyRate = h; }
+    var incomeSource = (incomeSourceEl && incomeSourceEl.value) ? incomeSourceEl.value : "both";
+    if (incomeSource !== "tracker" && incomeSource !== "manual" && incomeSource !== "both") incomeSource = "both";
+    var currency = (currencyEl && currencyEl.value) ? currencyEl.value : "GBP";
+    if (currency !== "EUR" && currency !== "GBP" && currency !== "USD") currency = "GBP";
+    var dateFormat = (dateFormatEl && dateFormatEl.value) ? dateFormatEl.value : "DD/MM/YYYY";
+    if (dateFormat !== "DD/MM/YYYY" && dateFormat !== "MM/DD/YYYY" && dateFormat !== "YYYY-MM-DD") dateFormat = "DD/MM/YYYY";
+    var notifyOverspend = document.getElementById("settingsNotifyOverspend") ? document.getElementById("settingsNotifyOverspend").checked : true;
+    var notifyBillReminder = document.getElementById("settingsNotifyBillReminder") ? document.getElementById("settingsNotifyBillReminder").checked : true;
+    var notifySavingsSuggestion = document.getElementById("settingsNotifySavingsSuggestion") ? document.getElementById("settingsNotifySavingsSuggestion").checked : true;
+    var notifyIncomeMilestone = document.getElementById("settingsNotifyIncomeMilestone") ? document.getElementById("settingsNotifyIncomeMilestone").checked : true;
+    var hourlyRef = getUserSettingsDocRef(USER_SETTINGS_HOURLY_DOC_ID);
+    var prefsRef = getUserSettingsDocRef(USER_SETTINGS_PREFERENCES_DOC_ID);
+    if (!hourlyRef || !prefsRef) {
+        if (msgEl) { msgEl.textContent = "Cannot save: database not ready."; msgEl.className = "settings-msg error"; }
+        return;
+    }
+    try {
+        await hourlyRef.set(
+            { hourlyRate: defaultHourlyRate, savingsPercent: savingsRate, monthlyBudget: monthlyBudget },
+            { merge: true }
+        );
+        await prefsRef.set({
+            riskLevel: riskLevel,
+            incomeSource: incomeSource,
+            notifyOverspend: notifyOverspend,
+            notifyBillReminder: notifyBillReminder,
+            notifySavingsSuggestion: notifySavingsSuggestion,
+            notifyIncomeMilestone: notifyIncomeMilestone,
+            currency: currency,
+            dateFormat: dateFormat,
+            categories: (appPreferences.categories && appPreferences.categories.length) ? appPreferences.categories.slice() : DEFAULT_EXPENSE_CATEGORIES.slice()
+        }, { merge: true });
+        appPreferences.monthlyBudget = monthlyBudget;
+        appPreferences.savingsRate = savingsRate;
+        appPreferences.riskLevel = riskLevel;
+        appPreferences.defaultHourlyRate = defaultHourlyRate;
+        appPreferences.incomeSource = incomeSource;
+        appPreferences.currency = currency;
+        appPreferences.dateFormat = dateFormat;
+        appPreferences.notifyOverspend = notifyOverspend;
+        appPreferences.notifyBillReminder = notifyBillReminder;
+        appPreferences.notifySavingsSuggestion = notifySavingsSuggestion;
+        appPreferences.notifyIncomeMilestone = notifyIncomeMilestone;
+        if (appPreferences.categories && appPreferences.categories.length) { /* already set from form */ } else appPreferences.categories = DEFAULT_EXPENSE_CATEGORIES.slice();
+        currentHourlyRate = defaultHourlyRate;
+        currentSavingsPercent = savingsRate;
+        populateCategoryDropdowns();
+        refreshAllDisplays();
+        if (msgEl) { msgEl.textContent = "Settings saved."; msgEl.className = "settings-msg success"; }
+    } catch (err) {
+        console.warn("saveSettingsFromForm error:", err);
+        if (msgEl) { msgEl.textContent = "Could not save settings."; msgEl.className = "settings-msg error"; }
+    }
+}
+
+/**
+ * Populates #category and #edit-category dropdowns from appPreferences.categories.
+ */
+function populateCategoryDropdowns() {
+    var cats = (appPreferences.categories && appPreferences.categories.length) ? appPreferences.categories.slice() : DEFAULT_EXPENSE_CATEGORIES.slice();
+    var mainSelect = document.getElementById("category");
+    var editSelect = document.getElementById("edit-category");
+    function fillSelect(sel) {
+        if (!sel) return;
+        var firstOpt = sel.options[0];
+        sel.innerHTML = "";
+        if (firstOpt) sel.appendChild(firstOpt);
+        else {
+            var opt0 = document.createElement("option");
+            opt0.value = "";
+            opt0.textContent = "select category";
+            sel.appendChild(opt0);
+        }
+        cats.forEach(function(c) {
+            var opt = document.createElement("option");
+            opt.value = c;
+            opt.textContent = c;
+            sel.appendChild(opt);
+        });
+    }
+    fillSelect(mainSelect);
+    fillSelect(editSelect);
+}
+
+/**
  * When user clicks "Save preference": read hourly rate and savings percentage from UI,
- * then store both in Firestore user_settings/hourly so savings percentage is persisted.
+ * then store in Firestore users/{uid}/user_settings/hourly.
  */
 async function saveUserSettingsHourlyRate() {
     var inputEl = document.getElementById("hourlyRateInput");
     var savingsInputEl = document.getElementById("savingsPercentInput");
+    var monthlyBudgetInputEl = document.getElementById("monthlyBudgetInput");
     var msgEl = document.getElementById("hourlyRateMsg");
-    if (!db || typeof db.collection !== "function") return;
+    var ref = getUserSettingsDocRef(USER_SETTINGS_HOURLY_DOC_ID);
+    if (!ref) return;
     var rate = currentHourlyRate;
     if (inputEl) {
         rate = parseFloat(inputEl.value);
@@ -1943,9 +2955,14 @@ async function saveUserSettingsHourlyRate() {
             savingsPercent = raw > 100 ? 100 : raw;
         }
     }
+    var monthlyBudget = 0;
+    if (monthlyBudgetInputEl) {
+        var budgetRaw = parseFloat(monthlyBudgetInputEl.value);
+        if (!isNaN(budgetRaw) && budgetRaw >= 0) monthlyBudget = budgetRaw;
+    }
     try {
-        await db.collection("user_settings").doc(USER_SETTINGS_HOURLY_DOC_ID).set(
-            { hourlyRate: rate, savingsPercent: savingsPercent },
+        await ref.set(
+            { hourlyRate: rate, savingsPercent: savingsPercent, monthlyBudget: monthlyBudget },
             { merge: true }
         );
         currentHourlyRate = rate;
@@ -1955,6 +2972,9 @@ async function saveUserSettingsHourlyRate() {
             msgEl.className = "hourly-msg success";
         }
         loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions after save preference:", e); });
+        runNotificationChecks().catch(function(e) { console.warn("runNotificationChecks after budget/preference:", e); });
+        loadNotificationsPanel().catch(function(e) { console.warn("loadNotificationsPanel after budget/preference:", e); });
+        loadSavingGoals().catch(function(e) { console.warn("loadSavingGoals after budget/preference:", e); });
     } catch (err) {
         console.warn("saveUserSettingsHourlyRate error:", err);
         if (msgEl) {
@@ -1981,8 +3001,9 @@ async function getTodayEarningsFromFirestore() {
             if (data && data.init === true) return;
             var startTime = data && data.startTime;
             var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
-            if (ts >= todayStart && ts <= todayEnd && data.earning != null && !isNaN(Number(data.earning))) {
-                total += Number(data.earning);
+            var sessionEarning = data.earningsForSession != null ? Number(data.earningsForSession) : (data.earning != null ? Number(data.earning) : NaN);
+            if (ts >= todayStart && ts <= todayEnd && !isNaN(sessionEarning)) {
+                total += sessionEarning;
             }
         });
         return Math.round(total * 100) / 100;
@@ -1990,6 +3011,194 @@ async function getTodayEarningsFromFirestore() {
         console.warn("getTodayEarningsFromFirestore error:", err);
         return 0;
     }
+}
+
+/** Returns sum of hours worked (hoursWorked or totalMinutes/60) for all completed sessions in the current month (local). Completed = has endTime or totalMinutes. */
+async function getTotalHoursThisMonth() {
+    if (!db || typeof db.collection !== "function") return 0;
+    try {
+        var now = new Date();
+        var monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).getTime();
+        var snapshot = await db.collection("work_sessions").get();
+        var totalHours = 0;
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var startTime = data && data.startTime;
+            var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
+            if (ts < monthStart || ts > monthEnd) return;
+            var hasEnd = data.endTime != null || (data.totalMinutes != null && !isNaN(Number(data.totalMinutes)));
+            if (!hasEnd) return;
+            var hours = data.hoursWorked != null && !isNaN(Number(data.hoursWorked))
+                ? Number(data.hoursWorked)
+                : (data.totalMinutes != null && !isNaN(Number(data.totalMinutes)) ? Number(data.totalMinutes) / 60 : 0);
+            totalHours += hours;
+        });
+        return Math.round(totalHours * 100) / 100;
+    } catch (err) {
+        console.warn("getTotalHoursThisMonth error:", err);
+        return 0;
+    }
+}
+
+/**
+ * Returns total earnings for the calendar week that contains the given date (Monday 00:00 to Sunday 23:59).
+ * @param {Date} date - Any date in the week
+ * @returns {Promise<number>}
+ */
+async function getEarningsForCalendarWeek(date) {
+    if (!db || typeof db.collection !== "function") return 0;
+    var d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    var day = d.getDay();
+    var toMonday = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + toMonday);
+    var weekStart = d.getTime();
+    var weekEnd = weekStart + 7 * 24 * 60 * 60 * 1000 - 1;
+    try {
+        var snapshot = await db.collection("work_sessions").get();
+        var total = 0;
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var hasEnd = data.endTime != null || (data.totalMinutes != null && !isNaN(Number(data.totalMinutes)));
+            if (!hasEnd) return;
+            var startTime = data.startTime;
+            var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
+            if (ts < weekStart || ts > weekEnd) return;
+            var earning = data.earningsForSession != null ? Number(data.earningsForSession) : (data.earning != null ? Number(data.earning) : NaN);
+            if (!isNaN(earning)) total += earning;
+        });
+        return Math.round(total * 100) / 100;
+    } catch (err) {
+        console.warn("getEarningsForCalendarWeek error:", err);
+        return 0;
+    }
+}
+
+/** Returns sum of earningsForSession (fallback: earning) for all completed sessions in the current month (local). */
+async function getTotalEarningsThisMonth() {
+    if (!db || typeof db.collection !== "function") return 0;
+    try {
+        var now = new Date();
+        var monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).getTime();
+        var snapshot = await db.collection("work_sessions").get();
+        var total = 0;
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var startTime = data && data.startTime;
+            var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
+            if (ts < monthStart || ts > monthEnd) return;
+            var hasEnd = data.endTime != null || (data.totalMinutes != null && !isNaN(Number(data.totalMinutes)));
+            if (!hasEnd) return;
+            var sessionEarning = data.earningsForSession != null ? Number(data.earningsForSession) : (data.earning != null ? Number(data.earning) : NaN);
+            if (!isNaN(sessionEarning)) total += sessionEarning;
+        });
+        return Math.round(total * 100) / 100;
+    } catch (err) {
+        console.warn("getTotalEarningsThisMonth error:", err);
+        return 0;
+    }
+}
+
+/**
+ * Returns the maximum total earnings from any single calendar month in the past (all months before the current month).
+ * Used for "new personal high" monthly earnings notification.
+ */
+async function getMaxEarningsPastMonths() {
+    if (!db || typeof db.collection !== "function") return 0;
+    var now = new Date();
+    var currentYear = now.getFullYear();
+    var currentMonth = now.getMonth();
+    try {
+        var snapshot = await db.collection("work_sessions").get();
+        var byMonth = Object.create(null);
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var hasEnd = data.endTime != null || (data.totalMinutes != null && !isNaN(Number(data.totalMinutes)));
+            if (!hasEnd) return;
+            var startTime = data.startTime;
+            var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
+            if (!ts) return;
+            var sessionDate = new Date(ts);
+            var y = sessionDate.getFullYear();
+            var m = sessionDate.getMonth();
+            if (y > currentYear || (y === currentYear && m >= currentMonth)) return;
+            var key = y + "-" + String(m + 1).padStart(2, "0");
+            if (!byMonth[key]) byMonth[key] = 0;
+            var earning = data.earningsForSession != null ? Number(data.earningsForSession) : (data.earning != null ? Number(data.earning) : NaN);
+            if (!isNaN(earning)) byMonth[key] += earning;
+        });
+        var max = 0;
+        for (var k in byMonth) if (byMonth[k] > max) max = byMonth[k];
+        return Math.round(max * 100) / 100;
+    } catch (err) {
+        console.warn("getMaxEarningsPastMonths error:", err);
+        return 0;
+    }
+}
+
+/**
+ * Returns the average total earnings per calendar month over past months (all months before the current month).
+ * Used for "higher than usual" savings suggestion.
+ */
+async function getAverageMonthlyEarningsPastMonths() {
+    if (!db || typeof db.collection !== "function") return 0;
+    var now = new Date();
+    var currentYear = now.getFullYear();
+    var currentMonth = now.getMonth();
+    try {
+        var snapshot = await db.collection("work_sessions").get();
+        var byMonth = Object.create(null);
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var hasEnd = data.endTime != null || (data.totalMinutes != null && !isNaN(Number(data.totalMinutes)));
+            if (!hasEnd) return;
+            var startTime = data.startTime;
+            var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
+            if (!ts) return;
+            var sessionDate = new Date(ts);
+            var y = sessionDate.getFullYear();
+            var m = sessionDate.getMonth();
+            if (y > currentYear || (y === currentYear && m >= currentMonth)) return;
+            var key = y + "-" + String(m + 1).padStart(2, "0");
+            if (!byMonth[key]) byMonth[key] = 0;
+            var earning = data.earningsForSession != null ? Number(data.earningsForSession) : (data.earning != null ? Number(data.earning) : NaN);
+            if (!isNaN(earning)) byMonth[key] += earning;
+        });
+        var keys = Object.keys(byMonth);
+        if (keys.length === 0) return 0;
+        var sum = 0;
+        for (var k = 0; k < keys.length; k++) sum += byMonth[keys[k]];
+        return Math.round((sum / keys.length) * 100) / 100;
+    } catch (err) {
+        console.warn("getAverageMonthlyEarningsPastMonths error:", err);
+        return 0;
+    }
+}
+
+/** Projected monthly income = average daily earnings (this month so far) × remaining working days (weekdays from today to end of month). Returns a number. */
+async function getProjectedMonthlyIncome() {
+    var totalEarnings = await getTotalEarningsThisMonth();
+    var now = new Date();
+    var year = now.getFullYear();
+    var month = now.getMonth();
+    var dayOfMonth = now.getDate();
+    var daysElapsed = dayOfMonth;
+    var avgDaily = daysElapsed >= 1 ? totalEarnings / daysElapsed : 0;
+    var lastDay = new Date(year, month + 1, 0).getDate();
+    var remainingWorkingDays = 0;
+    for (var d = dayOfMonth; d <= lastDay; d++) {
+        var weekday = new Date(year, month, d).getDay();
+        if (weekday >= 1 && weekday <= 5) remainingWorkingDays++;
+    }
+    var projected = Math.round(avgDaily * remainingWorkingDays * 100) / 100;
+    return projected;
 }
 
 /**
@@ -2023,7 +3232,7 @@ async function loadWorkSessions() {
                 var dateLabel = formatSessionDate(startTime || endTime);
                 var durationLabel = formatMinutesAsHoursMinutes(totalMinutes);
                 var breakLabel = breakMinutes <= 0 ? "0 min" : (breakMinutes >= 60 ? formatMinutesAsHoursMinutes(breakMinutes) : Math.round(breakMinutes) + " min");
-                var earning = data && (data.earning != null) ? Number(data.earning) : null;
+                var earning = (data.earningsForSession != null ? Number(data.earningsForSession) : (data.earning != null ? Number(data.earning) : null));
                 if (earning != null && isNaN(earning)) earning = null;
                 var mins = totalMinutes != null && !isNaN(Number(totalMinutes)) ? Number(totalMinutes) : 0;
                 var breakMins = breakMinutes;
@@ -2104,6 +3313,47 @@ async function loadWorkSessions() {
     });
     var weekEl = document.getElementById("weekEarningDisplay");
     if (weekEl) weekEl.textContent = "This week: £" + weekTotal.toFixed(2);
+    var monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).getTime();
+    var hoursThisMonth = 0;
+    var earningsThisMonth = 0;
+    var holidayHoursThisMonth = 0;
+    var totalHolidayAccrued = 0;
+    sessions.forEach(function(s) {
+        var completed = s.totalMinutes != null && s.totalMinutes > 0;
+        if (!completed) return;
+        var hours = s.totalMinutes / 60;
+        var accrual = hours * (typeof HOLIDAY_ACCRUAL_RATE === "number" && !isNaN(HOLIDAY_ACCRUAL_RATE) ? HOLIDAY_ACCRUAL_RATE : 0.1207);
+        if (s.sortKey >= monthStart && s.sortKey <= monthEnd) {
+            hoursThisMonth += hours;
+            if (s.earning != null && !isNaN(s.earning)) earningsThisMonth += s.earning;
+            holidayHoursThisMonth += accrual;
+        }
+        totalHolidayAccrued += accrual;
+    });
+    hoursThisMonth = Math.round(hoursThisMonth * 100) / 100;
+    earningsThisMonth = Math.round(earningsThisMonth * 100) / 100;
+    holidayHoursThisMonth = Math.round(holidayHoursThisMonth * 100) / 100;
+    totalHolidayAccrued = Math.round(totalHolidayAccrued * 100) / 100;
+    var dayOfMonth = now.getDate();
+    var lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    var remainingWorkingDays = 0;
+    for (var d = dayOfMonth; d <= lastDay; d++) {
+        var wd = new Date(now.getFullYear(), now.getMonth(), d).getDay();
+        if (wd >= 1 && wd <= 5) remainingWorkingDays++;
+    }
+    var avgDaily = dayOfMonth >= 1 ? earningsThisMonth / dayOfMonth : 0;
+    var projectedIncomeThisMonth = Math.round(avgDaily * remainingWorkingDays * 100) / 100;
+    var hoursThisMonthEl = document.getElementById("hoursWorkedThisMonthDisplay");
+    if (hoursThisMonthEl) hoursThisMonthEl.textContent = "Hours worked this month: " + hoursThisMonth.toFixed(2);
+    var earningsThisMonthEl = document.getElementById("earningsThisMonthDisplay");
+    if (earningsThisMonthEl) earningsThisMonthEl.textContent = "Earnings this month: £" + earningsThisMonth.toFixed(2);
+    var projectedEl = document.getElementById("projectedIncomeThisMonthDisplay");
+    if (projectedEl) projectedEl.textContent = "Projected income this month: £" + projectedIncomeThisMonth.toFixed(2);
+    var holidayThisMonthEl = document.getElementById("holidayAccruedThisMonthDisplay");
+    if (holidayThisMonthEl) holidayThisMonthEl.textContent = "Holiday hours accrued this month: " + holidayHoursThisMonth.toFixed(2);
+    var totalHolidayEl = document.getElementById("totalHolidayAccruedDisplay");
+    if (totalHolidayEl) totalHolidayEl.textContent = "Total holiday hours accrued: " + totalHolidayAccrued.toFixed(2);
     var rate = (typeof currentHourlyRate === "number" && !isNaN(currentHourlyRate)) ? currentHourlyRate : 0;
     var hoursToday = 0;
     sessions.forEach(function(s) {
@@ -2319,8 +3569,9 @@ async function updateWorkSessionTime(sessionId, totalMinutes, breakMinutes, star
         ? Number(breakMinutes) : 0;
     breakMins = Math.round(breakMins * 100) / 100;
     var hourlyRate = (typeof currentHourlyRate === "number" && !isNaN(currentHourlyRate)) ? currentHourlyRate : 0;
-    var earning = Math.round((totalMinutesRounded / 60) * hourlyRate * 100) / 100;
-    var payload = { totalMinutes: totalMinutesRounded, hourlyRate: hourlyRate, earning: earning };
+    var hoursWorked = Math.round((totalMinutesRounded / 60) * 100) / 100;
+    var earning = Math.round(hoursWorked * hourlyRate * 100) / 100;
+    var payload = { totalMinutes: totalMinutesRounded, hoursWorked: hoursWorked, hourlyRate: hourlyRate, earning: earning, earningsForSession: earning };
     if (breakMins >= 0) payload.breakMinutes = breakMins;
     if (startDate && endDate && !isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
         payload.startTime = firebase.firestore.Timestamp.fromDate(startDate);
@@ -2440,8 +3691,10 @@ function setupHourlyTrackerListener(elements) {
         }
         try {
             startBtn.disabled = true;
+            var rateAtStart = (currentHourlyRate != null && !isNaN(currentHourlyRate)) ? currentHourlyRate : 0;
             var docRef = await db.collection("work_sessions").add({
-                startTime: firebase.firestore.FieldValue.serverTimestamp()
+                startTime: firebase.firestore.FieldValue.serverTimestamp(),
+                hourlyRate: rateAtStart
             });
             hourlySessionDocId = docRef.id;
             hourlySessionStartTime = Date.now();
@@ -2482,7 +3735,9 @@ function setupHourlyTrackerListener(elements) {
             var workedMs = Math.max(0, elapsedMs - breakMinutes * 60000);
             var totalMinutes = Math.round(workedMs / 60000 * 100) / 100;
             var hourlyRate = currentHourlyRate != null && !isNaN(currentHourlyRate) ? currentHourlyRate : 0;
-            var earning = Math.round((totalMinutes / 60) * hourlyRate * 100) / 100;
+            var hoursWorked = Math.round((totalMinutes / 60) * 100) / 100;
+            var earning = Math.round(hoursWorked * hourlyRate * 100) / 100;
+            var earningsForSession = earning;
             if (msgEl) { msgEl.textContent = ""; msgEl.className = "hourly-msg"; }
             if (db && typeof db.collection === "function") {
                 try {
@@ -2490,8 +3745,10 @@ function setupHourlyTrackerListener(elements) {
                     await db.collection("work_sessions").doc(hourlySessionDocId).update({
                         endTime: firebase.firestore.FieldValue.serverTimestamp(),
                         totalMinutes: totalMinutes,
+                        hoursWorked: hoursWorked,
                         hourlyRate: hourlyRate,
                         earning: earning,
+                        earningsForSession: earningsForSession,
                         breakMinutes: breakMinutes
                     });
                     if (msgEl) {
@@ -2499,6 +3756,10 @@ function setupHourlyTrackerListener(elements) {
                         msgEl.className = "hourly-msg success";
                     }
                     loadWorkSessions().catch(function(e) { console.warn("loadWorkSessions after stop:", e); });
+                    refreshSpendingIncomeOverviewCharts().catch(function(e) { console.warn("refreshSpendingIncomeOverviewCharts:", e); });
+                    runNotificationChecks({ fromSessionComplete: true }).catch(function(e) { console.warn("runNotificationChecks after session:", e); });
+                    loadNotificationsPanel().catch(function(e) { console.warn("loadNotificationsPanel after session:", e); });
+                    loadSavingGoals().catch(function(e) { console.warn("loadSavingGoals after session:", e); });
                 } catch (err) {
                     console.error("Save session error:", err);
                     if (msgEl) {
@@ -2536,21 +3797,31 @@ function switchPage(pageName, elements) {
     
     // Remove active class from all tabs and pages
     if (elements.homeTab) elements.homeTab.classList.remove("active");
+    if (elements.expensesTab) elements.expensesTab.classList.remove("active");
     if (elements.historyTab) elements.historyTab.classList.remove("active");
     if (elements.hourlyTab) elements.hourlyTab.classList.remove("active");
     if (elements.stocksTab) elements.stocksTab.classList.remove("active");
     if (elements.mortgageTab) elements.mortgageTab.classList.remove("active");
     if (elements.homePage) elements.homePage.classList.remove("active");
+    if (elements.expensesPage) elements.expensesPage.classList.remove("active");
     if (elements.historyPage) elements.historyPage.classList.remove("active");
     if (elements.hourlyPage) elements.hourlyPage.classList.remove("active");
     if (elements.stocksPage) elements.stocksPage.classList.remove("active");
     if (elements.mortgagePage) elements.mortgagePage.classList.remove("active");
+    if (elements.settingsPage) elements.settingsPage.classList.remove("active");
+    if (elements.settingsTab) elements.settingsTab.classList.remove("active");
     
     // Add active class to selected tab and page
     if (pageName === "home") {
         if (elements.homeTab) elements.homeTab.classList.add("active");
         if (elements.homePage) elements.homePage.classList.add("active");
         console.log("✅ Switched to home page");
+        loadPortfolioFromFirestore().catch(function(e) { console.warn("loadPortfolio on home:", e); });
+        loadMortgages().catch(function(e) { console.warn("loadMortgages on home:", e); });
+    } else if (pageName === "expenses") {
+        if (elements.expensesTab) elements.expensesTab.classList.add("active");
+        if (elements.expensesPage) elements.expensesPage.classList.add("active");
+        console.log("✅ Switched to Expenses page");
     } else if (pageName === "history") {
         if (elements.historyTab) elements.historyTab.classList.add("active");
         if (elements.historyPage) elements.historyPage.classList.add("active");
@@ -2565,6 +3836,9 @@ function switchPage(pageName, elements) {
                 }
                 if (categoryChart) {
                     try { categoryChart.resize(); } catch (e) { /* ignore */ }
+                }
+                if (incomeVsExpensesChart) {
+                    try { incomeVsExpensesChart.resize(); } catch (e) { /* ignore */ }
                 }
             });
         });
@@ -2584,6 +3858,11 @@ function switchPage(pageName, elements) {
         if (elements.mortgagePage) elements.mortgagePage.classList.add("active");
         console.log("✅ Switched to Mortgage page");
         loadMortgages().catch(function(e) { console.warn("loadMortgages on switch:", e); });
+    } else if (pageName === "settings") {
+        if (elements.settingsTab) elements.settingsTab.classList.add("active");
+        if (elements.settingsPage) elements.settingsPage.classList.add("active");
+        console.log("✅ Switched to Settings page");
+        loadSettingsPage().catch(function(e) { console.warn("loadSettingsPage on switch:", e); });
     }
 }
 
@@ -2814,6 +4093,32 @@ function setupModalListeners() {
             handleSaveEditStock();
         });
     }
+
+    // Edit mortgage modal
+    var closeEditMortgageBtn = document.getElementById("closeEditMortgageModal");
+    var cancelEditMortgageBtn = document.getElementById("cancelEditMortgageBtn");
+    var saveEditMortgageBtn = document.getElementById("saveEditMortgageBtn");
+    if (closeEditMortgageBtn) closeEditMortgageBtn.addEventListener("click", closeEditMortgageModal);
+    if (cancelEditMortgageBtn) cancelEditMortgageBtn.addEventListener("click", closeEditMortgageModal);
+    if (saveEditMortgageBtn) saveEditMortgageBtn.addEventListener("click", handleSaveEditMortgage);
+    var editMortgageForm = document.getElementById("edit-mortgage-form");
+    if (editMortgageForm) {
+        editMortgageForm.addEventListener("submit", function(e) {
+            e.preventDefault();
+            handleSaveEditMortgage();
+        });
+    }
+
+    // Saving goal modal
+    var savingGoalForm = document.getElementById("savingGoalForm");
+    var savingGoalCancelBtn = document.getElementById("savingGoalCancelBtn");
+    if (savingGoalForm) {
+        savingGoalForm.addEventListener("submit", function(e) {
+            e.preventDefault();
+            handleSavingGoalFormSubmit(e);
+        });
+    }
+    if (savingGoalCancelBtn) savingGoalCancelBtn.addEventListener("click", closeSavingGoalModal);
 }
 
 /**
@@ -2882,6 +4187,14 @@ function handleModalOutsideClick(event) {
     var editStockModal = document.getElementById("editStockModal");
     if (editStockModal && editStockModal.classList.contains("show") && event.target === editStockModal) {
         closeEditStockModal();
+    }
+    var editMortgageModal = document.getElementById("editMortgageModal");
+    if (editMortgageModal && editMortgageModal.classList.contains("show") && event.target === editMortgageModal) {
+        closeEditMortgageModal();
+    }
+    var savingGoalModal = document.getElementById("savingGoalModal");
+    if (savingGoalModal && savingGoalModal.classList.contains("show") && event.target === savingGoalModal) {
+        closeSavingGoalModal();
     }
 }
 
@@ -2996,17 +4309,29 @@ async function handleSaveEditedExpense() {
                     await db.collection("recurring_bills").doc(selectedExpense.recurringBillId).delete();
                     recurringBillIdToKeep = null;
                 } else if (selectedExpense.recurringBillId && isRecurringBill) {
+                    var dueDayUpdate = 1;
+                    if (editData.date && typeof editData.date === "string" && editData.date.length >= 10) {
+                        var du = parseInt(editData.date.slice(8, 10), 10);
+                        if (!isNaN(du) && du >= 1 && du <= 31) dueDayUpdate = du;
+                    }
                     await db.collection("recurring_bills").doc(selectedExpense.recurringBillId).update({
                         amount: editData.amount,
                         note: editData.note,
-                        name: editData.note
+                        name: editData.note,
+                        dueDayOfMonth: dueDayUpdate
                     });
                 } else if (!selectedExpense.recurringBillId && isRecurringBill) {
+                    var dueDayNew = 1;
+                    if (editData.date && typeof editData.date === "string" && editData.date.length >= 10) {
+                        var dn = parseInt(editData.date.slice(8, 10), 10);
+                        if (!isNaN(dn) && dn >= 1 && dn <= 31) dueDayNew = dn;
+                    }
                     var rbRef = await db.collection("recurring_bills").add({
                         amount: editData.amount,
                         note: editData.note,
                         name: editData.note,
                         expenseId: selectedExpense.id,
+                        dueDayOfMonth: dueDayNew,
                         createdAt: firebase.firestore.FieldValue.serverTimestamp()
                     });
                     recurringBillIdToKeep = rbRef.id;
@@ -3040,9 +4365,12 @@ async function handleSaveEditedExpense() {
                 var dateTs = editData.date
                     ? firebase.firestore.Timestamp.fromDate(new Date(editData.date + "T12:00:00"))
                     : null;
+                var descEdit = editData.description != null ? String(editData.description) : (editData.note != null ? String(editData.note) : "");
+                var catEdit = (editData.category != null && String(editData.category).trim()) ? String(editData.category).trim() : "Other";
                 var updatePayload = {
                     amount: editData.amount,
-                    category: editData.category,
+                    description: descEdit,
+                    category: catEdit,
                     note: editData.note,
                     type: editData.type,
                     billSchedule: (editData.type === "bill" && (editData.billSchedule === "recurring" || editData.billSchedule === "single")) ? editData.billSchedule : "single",
@@ -3064,6 +4392,7 @@ async function handleSaveEditedExpense() {
 
     refreshAllDisplays();
     closeEditModal();
+    runNotificationChecks().catch(function(e) { console.warn("runNotificationChecks after edit:", e); });
 }
 
 /**
@@ -3204,48 +4533,85 @@ function calculateMonthTotal(monthExpenses) {
  * @returns {HTMLElement} List item element
  */
 function createExpenseListItem(expense, index, monthKey) {
-            const li = document.createElement("li");
+    const li = document.createElement("li");
     li.classList.add("expense-item");
     li.style.cursor = "pointer";
-    
-    // Make expense item clickable for selection and editing
+
     li.addEventListener("click", (e) => {
-        // Stop event propagation to prevent triggering other click handlers
         e.stopPropagation();
-        
-        if (e.target.tagName === "BUTTON") {
-            return; // Don't trigger if clicking delete button
-        }
-        
-        // Check if this expense is already selected BEFORE deselecting others
+        if (e.target.tagName === "BUTTON" || e.target.tagName === "SELECT" || e.target.closest("select")) return;
+
         const isAlreadySelected = li.classList.contains("selected") && selectedExpense === expense;
-        
         if (isAlreadySelected) {
-            // If already selected, open edit modal on second click
             openEditModal(expense);
             return;
         }
-        
-        // Deselect other items
-        document.querySelectorAll(".expense-item").forEach(item => {
-            item.classList.remove("selected");
-        });
-        
-        // First click: just select the expense
+        document.querySelectorAll(".expense-item").forEach(item => item.classList.remove("selected"));
         selectedExpense = expense;
         li.classList.add("selected");
     });
-    
-    // Expense text
-    const expenseText = document.createElement("span");
-    expenseText.textContent = `${expense.note} - £${expense.amount.toFixed(2)} (${expense.category})`;
-    expenseText.style.flex = "1";
-    li.appendChild(expenseText);
-    
-    // Delete button
+
+    var desc = expense.note || expense.description || "";
+    var dateStr = expense.date && typeof expense.date === "string" ? expense.date : (expense.date ? String(expense.date) : "—");
+    var amt = typeof expense.amount === "number" && !isNaN(expense.amount) ? expense.amount.toFixed(2) : "0.00";
+    var cat = expense.category ? String(expense.category) : "Other";
+
+    const row = document.createElement("div");
+    row.classList.add("expense-item-row");
+    const left = document.createElement("div");
+    left.classList.add("expense-item-main");
+    left.innerHTML = "";
+    const amountEl = document.createElement("span");
+    amountEl.classList.add("expense-item-amount");
+    amountEl.textContent = "£" + amt;
+    const descEl = document.createElement("span");
+    descEl.classList.add("expense-item-desc");
+    descEl.textContent = desc || "—";
+    const dateEl = document.createElement("span");
+    dateEl.classList.add("expense-item-date");
+    dateEl.textContent = dateStr;
+    left.appendChild(amountEl);
+    left.appendChild(descEl);
+    left.appendChild(dateEl);
+    row.appendChild(left);
+
+    const badge = document.createElement("span");
+    badge.classList.add("expense-item-category-badge");
+    badge.textContent = cat;
+    row.appendChild(badge);
+
+    const categorySelect = document.createElement("select");
+    categorySelect.classList.add("expense-item-category-select");
+    categorySelect.setAttribute("aria-label", "Edit category");
+    var catList = (appPreferences.categories && appPreferences.categories.length) ? appPreferences.categories : DEFAULT_EXPENSE_CATEGORIES;
+    catList.forEach(function(optVal) {
+        var opt = document.createElement("option");
+        opt.value = optVal;
+        opt.textContent = optVal;
+        if (optVal === cat) opt.selected = true;
+        categorySelect.appendChild(opt);
+    });
+    if (catList.indexOf(cat) === -1) {
+        var optOther = document.createElement("option");
+        optOther.value = cat;
+        optOther.textContent = cat;
+        optOther.selected = true;
+        categorySelect.insertBefore(optOther, categorySelect.firstChild);
+    }
+    categorySelect.addEventListener("change", function(e) {
+        e.stopPropagation();
+        var newCat = categorySelect.value;
+        if (!newCat) return;
+        updateExpenseCategory(expense.id, newCat);
+        expense.category = newCat;
+        badge.textContent = newCat;
+    });
+    categorySelect.addEventListener("click", function(e) { e.stopPropagation(); });
+    row.appendChild(categorySelect);
+
+    li.appendChild(row);
     const deleteBtn = createDeleteButton(index, monthKey);
     li.appendChild(deleteBtn);
-    
     return li;
 }
 
@@ -3255,6 +4621,23 @@ function createExpenseListItem(expense, index, monthKey) {
  * @param {string} monthKey - Month key for grouping
  * @returns {HTMLElement} Delete button element
  */
+async function updateExpenseCategory(expenseId, newCategory) {
+    if (!expenseId || newCategory == null || String(newCategory).trim() === "") return;
+    var exp = expenses.filter(function(e) { return e && e.id === expenseId; })[0];
+    if (!exp) return;
+    exp.category = String(newCategory).trim();
+    localStorage.setItem("expenses", JSON.stringify(expenses));
+    var ready = await ensureFirebaseReady();
+    if (ready && db && typeof db.collection === "function") {
+        try {
+            await db.collection("expenses").doc(expenseId).update({ category: exp.category });
+        } catch (err) {
+            console.warn("updateExpenseCategory Firestore:", err);
+        }
+    }
+    calculateAndDisplayTotals();
+}
+
 function createDeleteButton(index, monthKey) {
             const deleteBtn = document.createElement("button");
             deleteBtn.textContent = "x";
@@ -3356,6 +4739,7 @@ async function deleteExpense(index, monthKey) {
     }
 
     refreshAllDisplays();
+    runNotificationChecks().catch(function(e) { console.warn("runNotificationChecks after delete:", e); });
 }
 
 async function getTotalIncome() {
@@ -3407,6 +4791,35 @@ async function getTotalExpenses() {
     return sum;
 }
 
+/** Returns total expenses for the current calendar month from Firestore (excludes recurring bills). Amounts in same month as now (local time). */
+async function getTotalExpensesThisMonth() {
+    if (!db || typeof db.collection !== "function") return 0;
+    try {
+        var now = new Date();
+        var year = now.getFullYear();
+        var month = now.getMonth();
+        var monthStart = new Date(year, month, 1).getTime();
+        var monthEnd = new Date(year, month + 1, 0, 23, 59, 59, 999).getTime();
+        var snapshot = await db.collection("expenses").get();
+        var total = 0;
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data.type === "bill" && data.billSchedule === "recurring") return;
+            var dateVal = data.date;
+            var ts = 0;
+            if (dateVal && typeof dateVal.toDate === "function") {
+                try { ts = dateVal.toDate().getTime(); } catch (e) { return; }
+            } else if (dateVal) return;
+            if (ts < monthStart || ts > monthEnd) return;
+            total += Number(data.amount) || 0;
+        });
+        return Math.round(total * 100) / 100;
+    } catch (err) {
+        console.warn("getTotalExpensesThisMonth error:", err);
+        return 0;
+    }
+}
+
 async function updateTotalExpenses() {
     if (!db || typeof db.collection !== "function") return;
     try {
@@ -3443,10 +4856,50 @@ async function loadSummary() {
     var totalIncomeEl = document.getElementById("totalIncome");
     var totalExpensesEl = document.getElementById("totalExpenses");
     var netBalanceEl = document.getElementById("netBalance");
+    var sym = getCurrencySymbol();
     if (totalIncomeEl) totalIncomeEl.textContent = income.toFixed(2);
     if (totalExpensesEl) totalExpensesEl.textContent = expensesTotal.toFixed(2);
     if (netBalanceEl) netBalanceEl.textContent = netBalance.toFixed(2);
+    var summaryBalanceEl = document.getElementById("summaryCardTotalBalance");
+    var summaryIncomeEl = document.getElementById("summaryCardMonthlyIncome");
+    var summaryExpensesEl = document.getElementById("summaryCardMonthlyExpenses");
+    setSummaryValueWithAnimation(summaryBalanceEl, sym + netBalance.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    setSummaryValueWithAnimation(summaryIncomeEl, sym + income.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    setSummaryValueWithAnimation(summaryExpensesEl, sym + expensesTotal.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    await updateNetWorthDisplay();
     updateDashboard().catch(function(e) { console.warn("loadSummary updateDashboard:", e); });
+}
+
+/** Recalculates total mortgage balance and portfolio value, then updates Net Worth in Overview (#netWorth) and dashboard card (#netWorthCardValue). Uses Cash = 0. Call after mortgages or portfolio change. */
+async function updateNetWorthDisplay() {
+    var cash = 0;
+    var portfolioValue = 0;
+    var totalMortgageDebt = 0;
+    try {
+        portfolioValue = await getPortfolioValue();
+        var mortgageResult = await getTotalMortgageBalance();
+        totalMortgageDebt = mortgageResult.totalMortgageDebt || 0;
+    } catch (e) {
+        console.warn("updateNetWorthDisplay:", e);
+    }
+    var netWorth = (cash + portfolioValue) - totalMortgageDebt;
+    var netWorthEl = document.getElementById("netWorth");
+    if (netWorthEl) netWorthEl.textContent = netWorth.toFixed(2);
+    var netWorthCardEl = document.getElementById("netWorthCardValue");
+    var sym = getCurrencySymbol();
+    if (netWorthCardEl) netWorthCardEl.textContent = sym + netWorth.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    var portfolioCardEl = document.getElementById("summaryCardPortfolioValue");
+    setSummaryValueWithAnimation(portfolioCardEl, sym + portfolioValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+}
+
+/** Sets element text and triggers a short value-updated animation (CSS class). */
+function setSummaryValueWithAnimation(el, text) {
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove("value-updated");
+    el.offsetHeight;
+    el.classList.add("value-updated");
+    setTimeout(function() { el.classList.remove("value-updated"); }, 450);
 }
 
 /**
@@ -3471,6 +4924,281 @@ async function getRecurringBillsTotal() {
     } catch (err) {
         console.warn("getRecurringBillsTotal error:", err);
         return 0;
+    }
+}
+
+/**
+ * Returns recurring bills that are due in 2 days (where today's day of month === dueDayOfMonth - 2).
+ * Each bill needs dueDayOfMonth >= 3 so reminder day is in current month. Legacy bills without dueDayOfMonth are treated as 1.
+ * @returns {Promise<{ bills: Array<{ name: string, amount: number }>, total: number }>}
+ */
+async function getRecurringBillsDueInTwoDays() {
+    if (!db || typeof db.collection !== "function") return { bills: [], total: 0 };
+    var dayOfMonth = new Date().getDate();
+    var dueDayTarget = dayOfMonth + 2; // bills due in 2 days have dueDayOfMonth === today + 2
+    if (dueDayTarget > 31) return { bills: [], total: 0 };
+    try {
+        var snapshot = await db.collection("recurring_bills").get();
+        var bills = [];
+        var total = 0;
+        var seenExpenseIds = Object.create(null);
+        snapshot.forEach(function(doc) {
+            var data = doc.data();
+            if (data && data.init === true) return;
+            var expenseId = data && data.expenseId;
+            if (expenseId && seenExpenseIds[expenseId]) return;
+            var dueDay = typeof data.dueDayOfMonth === "number" && data.dueDayOfMonth >= 1 && data.dueDayOfMonth <= 31
+                ? data.dueDayOfMonth
+                : 1;
+            if (dueDay < 3) return; // reminder day would be last month
+            if (dueDay !== dueDayTarget) return;
+            if (expenseId) seenExpenseIds[expenseId] = true;
+            var amt = Number(data && data.amount);
+            if (isNaN(amt)) amt = 0;
+            var name = (data && (data.name || data.note || data.label)) || "Bill";
+            bills.push({ name: name, amount: amt });
+            total += amt;
+        });
+        total = Math.round(total * 100) / 100;
+        return { bills: bills, total: total };
+    } catch (err) {
+        console.warn("getRecurringBillsDueInTwoDays error:", err);
+        return { bills: [], total: 0 };
+    }
+}
+
+// ============================================================================
+// SMART FINANCIAL NOTIFICATIONS (Firestore collection: notifications)
+// Schema: userId, type, message, read (boolean, default false), createdAt (serverTimestamp)
+// ============================================================================
+
+/**
+ * Adds a notification document to Firestore. Does not throw; logs on failure.
+ * @param {string} userId - User identifier (e.g. NOTIFICATIONS_USER_ID)
+ * @param {string} type - One of: 'overspend', 'bill_due', 'income_milestone', 'savings_tip'
+ * @param {string} message - Human-readable message
+ */
+async function createNotification(userId, type, message) {
+    if (!db || typeof db.collection !== "function") return;
+    if (!userId || !type || !message) return;
+    try {
+        await db.collection("notifications").add({
+            userId: String(userId),
+            type: String(type),
+            message: String(message),
+            read: false,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    } catch (err) {
+        console.warn("createNotification error:", err);
+    }
+}
+
+/**
+ * Returns true if a notification with the given type (and optional message prefix) exists for userId since the given timestamp.
+ * Used to avoid duplicate notifications.
+ */
+async function hasRecentNotification(userId, type, sinceMs) {
+    if (!db || typeof db.collection !== "function") return false;
+    try {
+        var since = new Date(sinceMs);
+        var snapshot = await db.collection("notifications")
+            .where("userId", "==", String(userId))
+            .where("type", "==", String(type))
+            .where("createdAt", ">=", firebase.firestore.Timestamp.fromDate(since))
+            .limit(1)
+            .get();
+        return !snapshot.empty;
+    } catch (err) {
+        console.warn("hasRecentNotification error:", err);
+        return false;
+    }
+}
+
+/**
+ * Returns the user's monthly budget from users/{uid}/user_settings/hourly (monthlyBudget field). Returns 0 if not set.
+ */
+async function getMonthlyBudget() {
+    var ref = getUserSettingsDocRef(USER_SETTINGS_HOURLY_DOC_ID);
+    if (!ref) return 0;
+    try {
+        var doc = await ref.get();
+        if (!doc.exists || !doc.data()) return 0;
+        var val = Number(doc.data().monthlyBudget);
+        return isNaN(val) || val < 0 ? 0 : Math.round(val * 100) / 100;
+    } catch (err) {
+        console.warn("getMonthlyBudget error:", err);
+        return 0;
+    }
+}
+
+/** Current month spending from in-memory expenses (excludes recurring bills). For notification checks. */
+function getCurrentMonthSpendingFromLocal() {
+    var now = new Date();
+    var monthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    var sum = 0;
+    if (!Array.isArray(expenses)) return 0;
+    for (var i = 0; i < expenses.length; i++) {
+        var e = expenses[i];
+        if (!e || isRecurringBill(e)) continue;
+        var dateStr = e.date && typeof e.date === "string" ? e.date.slice(0, 7) : "";
+        if (dateStr !== monthStr) continue;
+        var amt = typeof e.amount === "number" && !isNaN(e.amount) ? e.amount : 0;
+        sum += amt;
+    }
+    return Math.round(sum * 100) / 100;
+}
+
+/**
+ * Runs automated financial notification checks. Call when data changes (expense add/edit/delete, work session complete).
+ * @param {Object} [opts] - Optional: { fromSessionComplete: true } to also run income_milestone check
+ */
+async function runNotificationChecks(opts) {
+    if (!db || typeof db.collection !== "function") return;
+    var uid = NOTIFICATIONS_USER_ID;
+    var now = new Date();
+    var dayOfMonth = now.getDate();
+    var twentyFourHoursAgo = now.getTime() - 24 * 60 * 60 * 1000;
+    var sevenDaysAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+
+    var sym = getCurrencySymbol();
+
+    // --- overspend: spending + recurring bills > income this month ---
+    if (appPreferences.notifyOverspend) {
+        try {
+            var income = await getTotalEarningsThisMonth();
+            var spending = getCurrentMonthSpendingFromLocal();
+            var bills = await getRecurringBillsTotal();
+            var totalOut = spending + bills;
+            if (income > 0 && totalOut > income) {
+                var hadRecent = await hasRecentNotification(uid, "overspend", twentyFourHoursAgo);
+                if (!hadRecent) {
+                    await createNotification(uid, "overspend",
+                        "This month you've spent " + sym + totalOut.toFixed(2) + " (bills " + sym + bills.toFixed(2) + ") but earned " + sym + income.toFixed(2) + ". Consider trimming non-essential spending.");
+                }
+            }
+        } catch (e) {
+            console.warn("runNotificationChecks overspend:", e);
+        }
+    }
+
+    // --- Budget alerts: 80% and 100% of user-defined monthly budget ---
+    if (appPreferences.notifyOverspend) {
+        try {
+            var budget = await getMonthlyBudget();
+            if (budget > 0) {
+            var spendingForBudget = getCurrentMonthSpendingFromLocal();
+            var billsForBudget = await getRecurringBillsTotal();
+            var totalExpenses = spendingForBudget + billsForBudget;
+            if (totalExpenses >= budget) {
+                var hadExceeded = await hasRecentNotification(uid, "budget_exceeded", twentyFourHoursAgo);
+                if (!hadExceeded) {
+                    await createNotification(uid, "budget_exceeded", "You've exceeded your monthly budget.");
+                }
+            } else if (totalExpenses >= 0.8 * budget) {
+                var hadEighty = await hasRecentNotification(uid, "budget_80", twentyFourHoursAgo);
+                if (!hadEighty) {
+                    await createNotification(uid, "budget_80", "You've reached 80% of your monthly budget.");
+                }
+            }
+        }
+        } catch (e) {
+            console.warn("runNotificationChecks budget:", e);
+        }
+    }
+
+    // --- bill_reminder: 2 days before each recurring bill's due date ---
+    if (appPreferences.notifyBillReminder) {
+        try {
+        var billsDueInTwo = await getRecurringBillsDueInTwoDays();
+        if (billsDueInTwo.bills.length > 0) {
+            var hadBillReminder = await hasRecentNotification(uid, "bill_reminder", twentyFourHoursAgo);
+            if (!hadBillReminder) {
+                var msg = billsDueInTwo.bills.length === 1
+                    ? billsDueInTwo.bills[0].name + " (£" + billsDueInTwo.bills[0].amount.toFixed(2) + ") is due in 2 days."
+                    : billsDueInTwo.bills.length + " bill(s) due in 2 days: £" + billsDueInTwo.total.toFixed(2) + " total.";
+                await createNotification(uid, "bill_reminder", msg);
+            }
+        }
+        } catch (e) {
+            console.warn("runNotificationChecks bill_reminder:", e);
+        }
+    }
+
+    // --- income_milestone: only when a work session was just completed ---
+    if (appPreferences.notifyIncomeMilestone && opts && opts.fromSessionComplete) {
+        try {
+            var earningsNow = await getTotalEarningsThisMonth();
+            var milestones = [500, 1000, 2500, 5000, 10000];
+            var highestReached = 0;
+            for (var m = 0; m < milestones.length; m++) {
+                if (earningsNow >= milestones[m]) highestReached = milestones[m];
+            }
+            if (highestReached > 0) {
+                var hadRecentMilestone = await hasRecentNotification(uid, "income_milestone", twentyFourHoursAgo);
+                if (!hadRecentMilestone) {
+                    await createNotification(uid, "income_milestone",
+                        "You've hit £" + highestReached.toLocaleString() + " earnings this month. Well done!");
+                }
+            }
+            // Weekly earnings exceed last week's by 15%
+            var thisWeekEarnings = await getEarningsForCalendarWeek(now);
+            var lastWeekDate = new Date(now);
+            lastWeekDate.setDate(lastWeekDate.getDate() - 7);
+            var lastWeekEarnings = await getEarningsForCalendarWeek(lastWeekDate);
+            if (lastWeekEarnings > 0 && thisWeekEarnings >= lastWeekEarnings * 1.15) {
+                var hadWeekly15 = await hasRecentNotification(uid, "weekly_earnings_15", twentyFourHoursAgo);
+                if (!hadWeekly15) {
+                    await createNotification(uid, "weekly_earnings_15",
+                        "Weekly earnings are 15% above last week! (£" + thisWeekEarnings.toFixed(2) + " vs £" + lastWeekEarnings.toFixed(2) + ")");
+                }
+            }
+            // Monthly earnings reach a new personal high
+            var maxPast = await getMaxEarningsPastMonths();
+            if (earningsNow > 0 && earningsNow > maxPast) {
+                var hadMonthlyHigh = await hasRecentNotification(uid, "monthly_high", twentyFourHoursAgo);
+                if (!hadMonthlyHigh) {
+                    await createNotification(uid, "monthly_high",
+                        "New personal best: monthly earnings! (£" + earningsNow.toFixed(2) + " this month.)");
+                }
+            }
+        } catch (e) {
+            console.warn("runNotificationChecks income_milestone:", e);
+        }
+    }
+
+    // --- savings_suggestion: income higher than usual this month — suggest saving 10–15% ---
+    if (appPreferences.notifySavingsSuggestion) {
+        try {
+        var incomeThisMonth = await getTotalEarningsThisMonth();
+        var avgPast = await getAverageMonthlyEarningsPastMonths();
+        if (avgPast > 0 && incomeThisMonth > avgPast) {
+            var hadSavingsSuggestion = await hasRecentNotification(uid, "savings_suggestion", sevenDaysAgo);
+            if (!hadSavingsSuggestion) {
+                await createNotification(uid, "savings_suggestion",
+                    "You earned more than usual — consider saving 10–15%.");
+            }
+        }
+        } catch (e) {
+            console.warn("runNotificationChecks savings_suggestion:", e);
+        }
+    }
+
+    // --- savings_tip: generic tip if user has saving goals, max once per 7 days ---
+    if (appPreferences.notifySavingsSuggestion) {
+        try {
+        var hadTip = await hasRecentNotification(uid, "savings_tip", sevenDaysAgo);
+        if (hadTip) return;
+        var hasGoals = false;
+        var snap = await db.collection("saving_goals").limit(1).get();
+        snap.forEach(function() { hasGoals = true; });
+        if (hasGoals) {
+            await createNotification(uid, "savings_tip",
+                "You have saving goals set. Consider transferring a small amount today to stay on track.");
+        }
+    } catch (e) {
+        console.warn("runNotificationChecks savings_tip:", e);
+    }
     }
 }
 
@@ -3511,6 +5239,127 @@ async function loadRecurringBills() {
     }
 }
 
+/**
+ * Returns monthly savings capacity based on: monthly income (hourly tracker), total monthly expenses, monthly bills, and user-defined savings rate (%).
+ * capacity = min(income * (savingsRate/100), discretionary) where discretionary = income - expenses - bills; capacity is 0 if discretionary <= 0.
+ * @returns {Promise<{ capacity: number, income: number, expenses: number, bills: number, savingsRate: number, discretionary: number }>}
+ */
+async function getMonthlySavingsCapacity() {
+    var income = 0;
+    var expenses = 0;
+    var bills = 0;
+    var savingsRate = (typeof currentSavingsPercent === "number" && !isNaN(currentSavingsPercent)) ? currentSavingsPercent : 0;
+    try {
+        income = await getTotalEarningsThisMonth();
+        expenses = await getTotalExpensesThisMonth();
+        bills = await getRecurringBillsTotal();
+    } catch (e) {
+        console.warn("getMonthlySavingsCapacity:", e);
+    }
+    var discretionary = Math.round((income - expenses - bills) * 100) / 100;
+    var fromRate = income * (savingsRate / 100);
+    var capacity = discretionary <= 0 ? 0 : (fromRate <= discretionary ? Math.round(fromRate * 100) / 100 : Math.round(discretionary * 100) / 100);
+    return { capacity: capacity, income: income, expenses: expenses, bills: bills, savingsRate: savingsRate, discretionary: discretionary };
+}
+
+/**
+ * SAVING GOALS — Firestore collection "saving_goals"
+ * Schema (compatible with Firestore compat and modular v9): goalName, targetAmount, totalSaved, deadline (optional),
+ * priority, monthlySuggestedContribution (optional). Uses standard JS types and Timestamp; no compat-only APIs.
+ *
+ * Calculated per goal:
+ *   percentCompleted = (totalSaved / targetAmount) * 100  (capped at 100)
+ *   estimatedTimeToGoal (months) = remainingAmount / monthlySuggestedContribution  (remainingAmount = targetAmount - totalSaved)
+ */
+/**
+ * Normalizes a saving_goals document (legacy or new schema) into a goal object with all required fields.
+ * Computes percentCompleted and estimatedTimeToGoal; uses stored monthlySuggestedContribution or derives from deadline.
+ * @param {string} id - Document ID
+ * @param {Object} data - Document data
+ * @returns {Object} { id, goalName, targetAmount, deadline, priority, monthlySuggestedContribution, totalSaved, percentCompleted, estimatedTimeToGoal }
+ */
+function normalizeSavingGoal(id, data) {
+    if (!data || data.init === true) return null;
+    var goalName = (data.goalName != null && String(data.goalName).trim()) ? String(data.goalName).trim() : (data.name || data.label || data.title || data.note) || "Goal";
+    var targetAmount = Number(data.targetAmount ?? data.target ?? data.goalAmount);
+    var totalSaved = Number(data.totalSaved ?? data.current ?? data.currentAmount ?? data.saved);
+    if (isNaN(targetAmount)) targetAmount = 0;
+    if (isNaN(totalSaved)) totalSaved = 0;
+    var deadline = data.deadline || null;
+    if (deadline && deadline.toDate) try { deadline = deadline.toDate(); } catch (e) { deadline = null; }
+    if (deadline && typeof deadline === "string" && deadline.length >= 10) deadline = new Date(deadline + "T12:00:00");
+    var priority = (data.priority === "High" || data.priority === "Medium" || data.priority === "Low") ? data.priority : "Medium";
+    var monthlySuggestedContribution = Number(data.monthlySuggestedContribution);
+    if (isNaN(monthlySuggestedContribution) || monthlySuggestedContribution < 0) monthlySuggestedContribution = 0;
+    if (monthlySuggestedContribution === 0 && deadline && targetAmount > totalSaved) {
+        var now = new Date();
+        var end = deadline instanceof Date ? deadline : new Date(deadline);
+        var monthsRemaining = Math.max(0.5, (end.getFullYear() - now.getFullYear()) * 12 + (end.getMonth() - now.getMonth()) + (end.getDate() - now.getDate()) / 30);
+        monthlySuggestedContribution = Math.round(((targetAmount - totalSaved) / monthsRemaining) * 100) / 100;
+    }
+    // percentCompleted = totalSaved / targetAmount * 100 (capped at 100 for display)
+    var percentCompleted = targetAmount > 0 ? Math.min(100, (totalSaved / targetAmount) * 100) : 0;
+    percentCompleted = Math.round(percentCompleted * 100) / 100;
+    var remaining = Math.max(0, targetAmount - totalSaved);
+    // estimatedTimeToGoal (months) = remainingAmount / monthlySuggestedContribution; then formatted for display
+    var estimatedTimeToGoal = "";
+    if (remaining <= 0) {
+        estimatedTimeToGoal = "Reached";
+    } else if (monthlySuggestedContribution > 0) {
+        var monthsToGoal = remaining / monthlySuggestedContribution; // remainingAmount / monthlySuggestedContribution
+        if (monthsToGoal >= 12) {
+            var years = Math.floor(monthsToGoal / 12);
+            var months = Math.round(monthsToGoal % 12);
+            estimatedTimeToGoal = years + " yr" + (years !== 1 ? "s" : "") + (months > 0 ? " " + months + " mo" : "");
+        } else {
+            estimatedTimeToGoal = Math.round(monthsToGoal * 10) / 10 + " months";
+        }
+    } else if (deadline && deadline instanceof Date) {
+        estimatedTimeToGoal = "By " + deadline.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+    } else {
+        estimatedTimeToGoal = "—";
+    }
+    return {
+        id: id,
+        goalName: goalName,
+        targetAmount: targetAmount,
+        deadline: deadline,
+        priority: priority,
+        monthlySuggestedContribution: monthlySuggestedContribution,
+        totalSaved: totalSaved,
+        percentCompleted: percentCompleted,
+        estimatedTimeToGoal: estimatedTimeToGoal
+    };
+}
+
+/** Builds a labeled row for the saving goal dashboard: "Label: value". Optional third arg: extra class for row (e.g. "saving-goal-row--pct"). */
+function makeDashboardRow(label, value, rowClass) {
+    var row = document.createElement("div");
+    row.className = "saving-goal-row" + (rowClass ? " " + rowClass : "");
+    var labelSpan = document.createElement("span");
+    labelSpan.className = "saving-goal-row-label";
+    labelSpan.textContent = label + ": ";
+    var valueSpan = document.createElement("span");
+    valueSpan.className = "saving-goal-row-value";
+    valueSpan.textContent = value;
+    row.appendChild(labelSpan);
+    row.appendChild(valueSpan);
+    return row;
+}
+
+/** estimatedTimeToGoal (in months) = remainingAmount / monthlySuggestedContribution; returns formatted string for display. */
+function formatEstimatedTimeToGoal(remaining, monthlySuggestedContribution) {
+    if (remaining <= 0) return "Reached";
+    if (!monthlySuggestedContribution || monthlySuggestedContribution <= 0) return "—";
+    var monthsToGoal = remaining / monthlySuggestedContribution; // remainingAmount / monthlySuggestedContribution
+    if (monthsToGoal >= 12) {
+        var years = Math.floor(monthsToGoal / 12);
+        var months = Math.round(monthsToGoal % 12);
+        return years + " yr" + (years !== 1 ? "s" : "") + (months > 0 ? " " + months + " mo" : "");
+    }
+    return Math.round(monthsToGoal * 10) / 10 + " months";
+}
+
 async function loadSavingGoals() {
     var listEl = document.getElementById("savingGoalsList");
     if (!listEl) return;
@@ -3519,41 +5368,235 @@ async function loadSavingGoals() {
         try {
             var snapshot = await db.collection("saving_goals").get();
             snapshot.forEach(function(doc) {
-                var data = doc.data();
-                if (data && data.init === true) return;
-                var target = Number(data && (data.target ?? data.targetAmount ?? data.goalAmount));
-                var current = Number(data && (data.current ?? data.currentAmount ?? data.saved));
-                if (isNaN(target)) target = 0;
-                if (isNaN(current)) current = 0;
-                var progress = target > 0 ? Math.min(100, (current / target) * 100) : 0;
-                var label = (data && (data.name ?? data.label ?? data.title ?? data.note)) || "Goal";
-                goals.push({ label: label, current: current, target: target, progress: progress });
+                var g = normalizeSavingGoal(doc.id, doc.data());
+                if (g) goals.push(g);
             });
         } catch (err) {
             console.warn("loadSavingGoals error:", err);
         }
     }
+    // Auto-calculate monthlySuggestedContribution for goals that don't have one, using income, expenses, bills, savings rate
+    try {
+        var cap = await getMonthlySavingsCapacity();
+        var n = goals.length;
+        if (n > 0 && cap.capacity > 0) {
+            var share = Math.round((cap.capacity / n) * 100) / 100;
+            for (var i = 0; i < goals.length; i++) {
+                if (goals[i].monthlySuggestedContribution === 0) {
+                    goals[i].monthlySuggestedContribution = share;
+                    var remaining = Math.max(0, goals[i].targetAmount - goals[i].totalSaved);
+                    goals[i].estimatedTimeToGoal = formatEstimatedTimeToGoal(remaining, goals[i].monthlySuggestedContribution);
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("loadSavingGoals auto-suggest:", e);
+    }
     listEl.innerHTML = "";
     goals.forEach(function(g) {
         var li = document.createElement("li");
-        li.className = "saving-goal-item";
+        li.className = "saving-goal-item saving-goal-card";
+        li.setAttribute("data-goal-id", g.id);
+        var topLine = document.createElement("div");
+        topLine.className = "saving-goal-top";
         var labelEl = document.createElement("span");
         labelEl.className = "saving-goal-label";
-        labelEl.textContent = g.label + " — £" + g.current.toFixed(2) + " / £" + g.target.toFixed(2);
+        labelEl.textContent = g.goalName;
+        var prioritySpan = document.createElement("span");
+        prioritySpan.className = "saving-goal-priority saving-goal-priority--" + g.priority.toLowerCase();
+        prioritySpan.textContent = g.priority;
+        topLine.appendChild(labelEl);
+        topLine.appendChild(prioritySpan);
+        li.appendChild(topLine);
+        var grid = document.createElement("div");
+        grid.className = "saving-goal-dashboard";
+        grid.appendChild(makeDashboardRow("Target", "£" + g.targetAmount.toFixed(2)));
+        grid.appendChild(makeDashboardRow("Total saved", "£" + g.totalSaved.toFixed(2)));
+        grid.appendChild(makeDashboardRow("% completed", g.percentCompleted.toFixed(1) + "%", "saving-goal-row--pct"));
         var barWrap = document.createElement("div");
         barWrap.className = "saving-goal-bar-wrap";
         var bar = document.createElement("div");
         bar.className = "saving-goal-bar";
-        bar.style.width = g.progress.toFixed(0) + "%";
+        bar.style.width = Math.min(100, g.percentCompleted) + "%";
         var pct = document.createElement("span");
         pct.className = "saving-goal-pct";
-        pct.textContent = g.progress.toFixed(0) + "%";
+        pct.textContent = g.percentCompleted.toFixed(0) + "%";
         barWrap.appendChild(bar);
         barWrap.appendChild(pct);
-        li.appendChild(labelEl);
-        li.appendChild(barWrap);
+        grid.appendChild(barWrap);
+        grid.appendChild(makeDashboardRow("Suggested contribution", g.monthlySuggestedContribution > 0 ? "£" + g.monthlySuggestedContribution.toFixed(2) + "/mo" : "—"));
+        grid.appendChild(makeDashboardRow("Estimated time remaining", g.estimatedTimeToGoal || "—"));
+        li.appendChild(grid);
+        var actions = document.createElement("div");
+        actions.className = "saving-goal-actions";
+        var addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.className = "saving-goal-btn saving-goal-add-btn";
+        addBtn.textContent = "Add to saved";
+        addBtn.setAttribute("data-goal-id", g.id);
+        var editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "saving-goal-btn saving-goal-edit-btn";
+        editBtn.textContent = "Edit";
+        editBtn.setAttribute("data-goal-id", g.id);
+        actions.appendChild(addBtn);
+        actions.appendChild(editBtn);
+        li.appendChild(actions);
         listEl.appendChild(li);
     });
+    if (typeof setupSavingGoalsListeners === "function") setupSavingGoalsListeners();
+}
+
+/**
+ * Adds a new saving goal to Firestore. Fields: goalName, targetAmount, totalSaved (default 0), deadline (optional), priority, monthlySuggestedContribution (optional).
+ */
+async function addSavingGoal(payload) {
+    if (!db || typeof db.collection !== "function") return null;
+    try {
+        var data = {
+            goalName: String(payload.goalName || "Goal").trim() || "Goal",
+            targetAmount: Math.round(Number(payload.targetAmount) * 100) / 100 || 0,
+            totalSaved: Math.round(Number(payload.totalSaved) * 100) / 100 || 0,
+            priority: (payload.priority === "High" || payload.priority === "Low") ? payload.priority : "Medium"
+        };
+        if (payload.deadline && String(payload.deadline).trim()) data.deadline = String(payload.deadline).trim().slice(0, 10);
+        if (payload.monthlySuggestedContribution != null && !isNaN(Number(payload.monthlySuggestedContribution)) && Number(payload.monthlySuggestedContribution) > 0)
+            data.monthlySuggestedContribution = Math.round(Number(payload.monthlySuggestedContribution) * 100) / 100;
+        var ref = await db.collection("saving_goals").add(data);
+        await loadSavingGoals();
+        return ref.id;
+    } catch (err) {
+        console.warn("addSavingGoal error:", err);
+        return null;
+    }
+}
+
+/**
+ * Updates an existing saving goal. Partial updates supported.
+ */
+async function updateSavingGoal(docId, payload) {
+    if (!docId || !db || typeof db.collection !== "function") return false;
+    try {
+        var data = {};
+        if (payload.goalName != null) data.goalName = String(payload.goalName).trim() || "Goal";
+        if (payload.targetAmount != null) data.targetAmount = Math.round(Number(payload.targetAmount) * 100) / 100;
+        if (payload.totalSaved != null) data.totalSaved = Math.round(Number(payload.totalSaved) * 100) / 100;
+        if (payload.priority != null && (payload.priority === "High" || payload.priority === "Medium" || payload.priority === "Low")) data.priority = payload.priority;
+        if (payload.deadline !== undefined) data.deadline = payload.deadline && String(payload.deadline).trim() ? String(payload.deadline).trim().slice(0, 10) : null;
+        if (payload.monthlySuggestedContribution !== undefined) data.monthlySuggestedContribution = Math.round(Number(payload.monthlySuggestedContribution) * 100) / 100;
+        if (Object.keys(data).length === 0) return true;
+        await db.collection("saving_goals").doc(docId).update(data);
+        await loadSavingGoals();
+        return true;
+    } catch (err) {
+        console.warn("updateSavingGoal error:", err);
+        return false;
+    }
+}
+
+/**
+ * Sets up click listeners for saving goal buttons (Add to saved, Edit) and Add goal button. Call after loadSavingGoals renders.
+ */
+function setupSavingGoalsListeners() {
+    document.querySelectorAll(".saving-goal-add-btn").forEach(function(btn) {
+        btn.onclick = function() {
+            var id = btn.getAttribute("data-goal-id");
+            if (id) openAddToSavedModal(id);
+        };
+    });
+    document.querySelectorAll(".saving-goal-edit-btn").forEach(function(btn) {
+        btn.onclick = function() {
+            var id = btn.getAttribute("data-goal-id");
+            if (id) openSavingGoalEditModal(id);
+        };
+    });
+    var addGoalBtn = document.getElementById("addSavingGoalBtn");
+    if (addGoalBtn && !addGoalBtn._savingGoalsBound) {
+        addGoalBtn._savingGoalsBound = true;
+        addGoalBtn.addEventListener("click", openSavingGoalAddModal);
+    }
+}
+
+function openSavingGoalAddModal() {
+    var modal = document.getElementById("savingGoalModal");
+    var form = document.getElementById("savingGoalForm");
+    if (!modal || !form) return;
+    form.reset();
+    document.getElementById("savingGoalModalTitle").textContent = "Add saving goal";
+    document.getElementById("savingGoalSubmitBtn").textContent = "Add goal";
+    form.dataset.goalId = "";
+    modal.classList.add("show");
+    modal.setAttribute("aria-hidden", "false");
+}
+
+async function openSavingGoalEditModal(docId) {
+    var modal = document.getElementById("savingGoalModal");
+    var form = document.getElementById("savingGoalForm");
+    if (!modal || !form || !db || !docId) return;
+    try {
+        var doc = await db.collection("saving_goals").doc(docId).get();
+        if (!doc.exists) return;
+        var d = doc.data();
+        var g = normalizeSavingGoal(docId, d);
+        if (!g) return;
+        document.getElementById("savingGoalModalTitle").textContent = "Edit saving goal";
+        document.getElementById("savingGoalSubmitBtn").textContent = "Save";
+        document.getElementById("savingGoalName").value = g.goalName;
+        document.getElementById("savingGoalTargetAmount").value = g.targetAmount > 0 ? g.targetAmount.toFixed(2) : "";
+        document.getElementById("savingGoalTotalSaved").value = g.totalSaved > 0 ? g.totalSaved.toFixed(2) : "";
+        document.getElementById("savingGoalPriority").value = g.priority;
+        document.getElementById("savingGoalDeadline").value = g.deadline && g.deadline instanceof Date ? g.deadline.toISOString().slice(0, 10) : (g.deadline || "");
+        document.getElementById("savingGoalMonthlySuggested").value = g.monthlySuggestedContribution > 0 ? g.monthlySuggestedContribution.toFixed(2) : "";
+        form.dataset.goalId = docId;
+        modal.classList.add("show");
+        modal.setAttribute("aria-hidden", "false");
+    } catch (e) {
+        console.warn("openSavingGoalEditModal:", e);
+    }
+}
+
+function closeSavingGoalModal() {
+    var modal = document.getElementById("savingGoalModal");
+    if (modal) {
+        modal.classList.remove("show");
+        modal.setAttribute("aria-hidden", "true");
+    }
+}
+
+async function handleSavingGoalFormSubmit(ev) {
+    ev.preventDefault();
+    var form = document.getElementById("savingGoalForm");
+    var id = form && form.dataset && form.dataset.goalId;
+    var name = (document.getElementById("savingGoalName") && document.getElementById("savingGoalName").value) || "";
+    var target = parseFloat(document.getElementById("savingGoalTargetAmount") && document.getElementById("savingGoalTargetAmount").value);
+    var saved = parseFloat(document.getElementById("savingGoalTotalSaved") && document.getElementById("savingGoalTotalSaved").value);
+    var priority = document.getElementById("savingGoalPriority") && document.getElementById("savingGoalPriority").value;
+    var deadlineEl = document.getElementById("savingGoalDeadline");
+    var deadline = deadlineEl && deadlineEl.value ? deadlineEl.value.trim().slice(0, 10) : "";
+    var monthlyEl = document.getElementById("savingGoalMonthlySuggested");
+    var monthly = monthlyEl && monthlyEl.value ? parseFloat(monthlyEl.value) : 0;
+    if (!name.trim()) { alert("Please enter a goal name."); return; }
+    if (isNaN(target) || target <= 0) { alert("Please enter a valid target amount."); return; }
+    if (id) {
+        await updateSavingGoal(id, { goalName: name.trim(), targetAmount: target, totalSaved: isNaN(saved) ? 0 : saved, priority: priority || "Medium", deadline: deadline || null, monthlySuggestedContribution: isNaN(monthly) ? 0 : monthly });
+    } else {
+        await addSavingGoal({ goalName: name.trim(), targetAmount: target, totalSaved: isNaN(saved) ? 0 : saved, priority: priority || "Medium", deadline: deadline || null, monthlySuggestedContribution: isNaN(monthly) ? 0 : monthly });
+    }
+    closeSavingGoalModal();
+}
+
+function openAddToSavedModal(docId) {
+    var amount = prompt("Amount to add to this goal (£):", "0");
+    if (amount === null) return;
+    var num = parseFloat(amount);
+    if (isNaN(num) || num <= 0) return;
+    if (!db || typeof db.collection !== "function") return;
+    db.collection("saving_goals").doc(docId).get().then(function(doc) {
+        if (!doc.exists) return;
+        var d = doc.data();
+        var current = Number(d.totalSaved ?? d.current ?? d.currentAmount ?? d.saved) || 0;
+        return updateSavingGoal(docId, { totalSaved: Math.round((current + num) * 100) / 100 });
+    }).catch(function(e) { console.warn("openAddToSavedModal:", e); });
 }
 
 // ============================================================================
@@ -3760,6 +5803,140 @@ async function updateDashboard() {
     const avgDailySpend = calculateAverageDailySpend(monthlyExpenses, nowForDashboard);
     animateValue(averageExpenseEl, avgDailySpend, "£");
     if (dailyBillsEl) animateValue(dailyBillsEl, dailyBills, "£");
+
+    var budgetWrap = document.getElementById("monthlyBudgetProgressWrap");
+    var budgetBar = document.getElementById("monthlyBudgetProgressBar");
+    var budgetPctEl = document.getElementById("monthlyBudgetProgressPct");
+    var monthlyBudget = (appPreferences && typeof appPreferences.monthlyBudget === "number") ? appPreferences.monthlyBudget : 0;
+    if (budgetWrap && budgetBar && budgetPctEl) {
+        if (monthlyBudget > 0) {
+            var budgetUsedPct = Math.min(100, (monthlyExpensesTotal / monthlyBudget) * 100);
+            budgetBar.style.width = budgetUsedPct.toFixed(1) + "%";
+            budgetBar.setAttribute("aria-valuenow", Math.round(budgetUsedPct));
+            budgetPctEl.textContent = budgetUsedPct.toFixed(0) + "%";
+            budgetWrap.style.display = "block";
+            budgetWrap.setAttribute("aria-hidden", "false");
+        } else {
+            budgetWrap.style.display = "none";
+            budgetWrap.setAttribute("aria-hidden", "true");
+        }
+    }
+
+    loadNotificationsPanel().catch(function(e) { console.warn("loadNotificationsPanel:", e); });
+}
+
+/**
+ * Loads notifications from Firestore (newest first) and renders the Notifications Panel.
+ */
+async function loadNotificationsPanel() {
+    var listEl = document.getElementById("notificationsList");
+    var panelEl = document.getElementById("notificationsPanel");
+    var emptyEl = document.getElementById("notificationsEmpty");
+    if (!listEl || !panelEl) return;
+    if (!db || typeof db.collection !== "function") {
+        listEl.innerHTML = "";
+        if (emptyEl) emptyEl.style.display = "block";
+        panelEl.classList.remove("has-notifications");
+        return;
+    }
+    try {
+        var snapshot = await db.collection("notifications")
+            .where("userId", "==", NOTIFICATIONS_USER_ID)
+            .limit(100)
+            .get();
+        var items = [];
+        snapshot.forEach(function(doc) {
+            var d = doc.data();
+            var createdAt = d.createdAt;
+            var ts = 0;
+            if (createdAt && createdAt.toDate) try { ts = createdAt.toDate().getTime(); } catch (e) {}
+            else if (createdAt) ts = typeof createdAt.getTime === "function" ? createdAt.getTime() : 0;
+            items.push({
+                id: doc.id,
+                type: d.type || "",
+                message: d.message || "",
+                read: d.read === true,
+                createdAt: d.createdAt,
+                _sortTime: ts
+            });
+        });
+        items.sort(function(a, b) { return (b._sortTime || 0) - (a._sortTime || 0); });
+        items = items.slice(0, 50);
+        renderNotificationsList(listEl, panelEl, emptyEl, items);
+    } catch (err) {
+        console.warn("loadNotificationsPanel error:", err);
+        listEl.innerHTML = "";
+        if (emptyEl) emptyEl.style.display = "block";
+        panelEl.classList.remove("has-notifications");
+    }
+}
+
+/**
+ * Renders notification items into the list and toggles empty state.
+ */
+function renderNotificationsList(listEl, panelEl, emptyEl, items) {
+    listEl.innerHTML = "";
+    if (!items || items.length === 0) {
+        if (emptyEl) emptyEl.style.display = "block";
+        panelEl.classList.remove("has-notifications");
+        return;
+    }
+    if (emptyEl) emptyEl.style.display = "none";
+    panelEl.classList.add("has-notifications");
+    items.forEach(function(item) {
+        var li = document.createElement("li");
+        li.className = "notification-item" + (item.read ? "" : " unread");
+        li.setAttribute("data-notification-id", item.id);
+        var dateStr = "—";
+        if (item.createdAt) {
+            try {
+                var dt = item.createdAt.toDate ? item.createdAt.toDate() : new Date(item.createdAt);
+                dateStr = dt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) + " " + dt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+            } catch (e) {}
+        }
+        var body = document.createElement("div");
+        body.className = "notification-body";
+        var msg = document.createElement("p");
+        msg.className = "notification-message";
+        msg.textContent = item.message;
+        var meta = document.createElement("p");
+        meta.className = "notification-meta";
+        meta.textContent = (item.type ? item.type + " · " : "") + dateStr;
+        body.appendChild(msg);
+        body.appendChild(meta);
+        var actions = document.createElement("div");
+        actions.className = "notification-actions";
+        if (!item.read) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "mark-read-btn";
+            btn.textContent = "Mark read";
+            btn.setAttribute("data-notification-id", item.id);
+            btn.addEventListener("click", function(ev) {
+                ev.preventDefault();
+                var id = ev.currentTarget.getAttribute("data-notification-id");
+                if (id) markNotificationRead(id);
+            });
+            actions.appendChild(btn);
+        }
+        li.appendChild(body);
+        li.appendChild(actions);
+        listEl.appendChild(li);
+    });
+}
+
+/**
+ * Marks a notification as read in Firestore and refreshes the list.
+ * @param {string} docId - Firestore document ID
+ */
+async function markNotificationRead(docId) {
+    if (!docId || !db || typeof db.collection !== "function") return;
+    try {
+        await db.collection("notifications").doc(docId).update({ read: true });
+        await loadNotificationsPanel();
+    } catch (err) {
+        console.warn("markNotificationRead error:", err);
+    }
 }
 
 /**
@@ -3957,7 +6134,7 @@ function downloadCSVFile(csvContent) {
     // Create download link
     const link = document.createElement("a");
     link.href = url;
-    link.download = "winner-expenses.csv";
+    link.download = "valoro-expenses.csv";
     link.style.display = "none";
     
     // Trigger download
@@ -3992,6 +6169,7 @@ function renderChart() {
     }
     rendermonthlyChart();
     renderCategoryChart();
+    renderIncomeVsExpensesChart().catch(function(e) { console.warn("renderIncomeVsExpensesChart:", e); });
 }
 
 /**
@@ -4124,6 +6302,295 @@ function renderCategoryChart() {
 }
 
 /**
+ * Groups earnings by week for the given month (YYYY-MM). Returns labels (Week 1–4/5) and data array.
+ * @param {string} month - YYYY-MM
+ * @returns {Promise<{ labels: string[], data: number[] }>}
+ */
+async function getWeeklyIncome(month) {
+    if (!month || typeof month !== "string" || month.length < 7) return { labels: [], data: [] };
+    var parts = month.split("-");
+    var year = parseInt(parts[0], 10);
+    var monthNum = parseInt(parts[1], 10);
+    if (isNaN(year) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) return { labels: [], data: [] };
+    var lastDay = new Date(year, monthNum, 0).getDate();
+    var numWeeks = lastDay <= 28 ? 4 : 5;
+    var labels = [];
+    for (var w = 1; w <= numWeeks; w++) labels.push("Week " + w);
+    var data = new Array(numWeeks).fill(0);
+    function weekIndex(dayOfMonth) {
+        var d = parseInt(dayOfMonth, 10);
+        if (isNaN(d) || d < 1) return 0;
+        var idx = Math.floor((d - 1) / 7);
+        return Math.min(idx, numWeeks - 1);
+    }
+    if (db && typeof db.collection === "function") {
+        try {
+            var monthStart = new Date(year, monthNum - 1, 1).getTime();
+            var monthEnd = new Date(year, monthNum, 0, 23, 59, 59, 999).getTime();
+            var snap = await db.collection("work_sessions").get();
+            snap.forEach(function(doc) {
+                var d = doc.data();
+                if (d && d.init === true) return;
+                var hasEnd = d.endTime != null || (d.totalMinutes != null && !isNaN(Number(d.totalMinutes)));
+                if (!hasEnd) return;
+                var earning = d.earningsForSession != null ? Number(d.earningsForSession) : (d.earning != null ? Number(d.earning) : NaN);
+                if (isNaN(earning)) return;
+                var startTime = d.startTime;
+                var ts = startTime && startTime.toDate ? startTime.toDate().getTime() : 0;
+                if (ts < monthStart || ts > monthEnd) return;
+                var day = startTime && startTime.toDate ? startTime.toDate().getDate() : 1;
+                data[weekIndex(day)] += earning;
+            });
+        } catch (e) {
+            console.warn("getWeeklyIncome:", e);
+        }
+    }
+    data = data.map(function(v) { return Math.round(v * 100) / 100; });
+    return { labels: labels, data: data };
+}
+
+/**
+ * Groups expenses by week for the given month (YYYY-MM). Uses in-memory expenses; excludes recurring bills.
+ * @param {string} month - YYYY-MM
+ * @returns {{ labels: string[], data: number[] }}
+ */
+function getWeeklyExpenses(month) {
+    if (!month || typeof month !== "string" || month.length < 7) return { labels: [], data: [] };
+    var parts = month.split("-");
+    var year = parseInt(parts[0], 10);
+    var monthNum = parseInt(parts[1], 10);
+    if (isNaN(year) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) return { labels: [], data: [] };
+    var lastDay = new Date(year, monthNum, 0).getDate();
+    var numWeeks = lastDay <= 28 ? 4 : 5;
+    var labels = [];
+    for (var w = 1; w <= numWeeks; w++) labels.push("Week " + w);
+    var data = new Array(numWeeks).fill(0);
+    function weekIndex(dayOfMonth) {
+        var d = parseInt(dayOfMonth, 10);
+        if (isNaN(d) || d < 1) return 0;
+        var idx = Math.floor((d - 1) / 7);
+        return Math.min(idx, numWeeks - 1);
+    }
+    expenses.forEach(function(exp) {
+        if (!exp || isRecurringBill(exp)) return;
+        var amt = typeof exp.amount === "number" && !isNaN(exp.amount) ? exp.amount : 0;
+        if (amt === 0) return;
+        var dateStr = exp.date && typeof exp.date === "string" ? exp.date : "";
+        if (!dateStr || dateStr.length < 10) return;
+        if (dateStr.slice(0, 7) !== month) return;
+        var day = parseInt(dateStr.slice(8, 10), 10);
+        if (isNaN(day) || day < 1) return;
+        data[weekIndex(day)] += amt;
+    });
+    data = data.map(function(v) { return Math.round(v * 100) / 100; });
+    return { labels: labels, data: data };
+}
+
+/**
+ * Sums expense amounts per category for the given month (YYYY-MM). Uses in-memory expenses; excludes recurring bills.
+ * @param {string} month - YYYY-MM
+ * @returns {{ labels: string[], data: number[], totals: Object }}
+ */
+function getExpensesByCategory(month) {
+    if (!month || typeof month !== "string" || month.length < 7) return { labels: [], data: [], totals: {} };
+    var filtered = expenses.filter(function(exp) {
+        if (!exp || isRecurringBill(exp)) return false;
+        var dateStr = exp.date && typeof exp.date === "string" ? exp.date : "";
+        return dateStr.slice(0, 7) === month;
+    });
+    var totals = calculateCategoryTotals(filtered);
+    var labels = Object.keys(totals);
+    var data = Object.values(totals);
+    return { labels: labels, data: data, totals: totals };
+}
+
+/**
+ * Gets weekly totals for the current month: income (from work_sessions) and expenses (from expenses collection).
+ * @returns {Promise<{ labels: string[], income: number[], expenses: number[] }>}
+ */
+async function getWeeklyIncomeAndExpensesForCurrentMonth() {
+    var now = new Date();
+    var monthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    var incomeResult = await getWeeklyIncome(monthStr);
+    var expensesResult = getWeeklyExpenses(monthStr);
+    return { labels: incomeResult.labels, income: incomeResult.data, expenses: expensesResult.data };
+}
+
+/**
+ * Renders the Income vs Expenses chart (current month by week). Y-axis in £ to match the rest of the app.
+ */
+async function renderIncomeVsExpensesChart() {
+    if (typeof Chart === "undefined") return;
+    var chartElement = document.getElementById("IncomeVsExpensesChart");
+    if (!chartElement) return;
+    var section = document.getElementById("incomeVsExpensesChartSection");
+    if (!section || !section.classList.contains("chart-visible")) return;
+
+    var data = await getWeeklyIncomeAndExpensesForCurrentMonth();
+    var ctx = chartElement.getContext("2d");
+    if (incomeVsExpensesChart) {
+        incomeVsExpensesChart.destroy();
+        incomeVsExpensesChart = null;
+    }
+
+    incomeVsExpensesChart = new Chart(ctx, {
+        type: "bar",
+        data: {
+            labels: data.labels || [],
+            datasets: [
+                {
+                    label: "Income (£)",
+                    data: data.income,
+                    backgroundColor: "rgba(76, 175, 80, 0.7)",
+                    borderColor: "rgb(76, 175, 80)",
+                    borderWidth: 1,
+                    borderRadius: 6,
+                    borderSkipped: false,
+                    barThickness: "flex",
+                    maxBarThickness: 50
+                },
+                {
+                    label: "Expenses (£)",
+                    data: data.expenses,
+                    backgroundColor: "rgba(244, 67, 54, 0.7)",
+                    borderColor: "rgb(244, 67, 54)",
+                    borderWidth: 1,
+                    borderRadius: 6,
+                    borderSkipped: false,
+                    barThickness: "flex",
+                    maxBarThickness: 50
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: { display: true, text: "Week of month", color: "#A6A6A6" },
+                    ticks: { color: "#A6A6A6", maxRotation: 0 }
+                },
+                y: {
+                    title: { display: true, text: "£", color: "#A6A6A6" },
+                    ticks: { color: "#A6A6A6", callback: function(v) { return "£" + v; } },
+                    beginAtZero: true
+                }
+            },
+            plugins: {
+                legend: { display: true, position: "top", labels: { color: "#A6A6A6" } }
+            }
+        }
+    });
+}
+
+/**
+ * Refreshes the dashboard Spending & Income Overview panel: income vs expenses bar chart and expenses-by-category doughnut.
+ * Uses current month (YYYY-MM). Safe to call when Chart or canvas elements are missing.
+ */
+async function refreshSpendingIncomeOverviewCharts() {
+    if (typeof Chart === "undefined") return;
+    var barCanvas = document.getElementById("DashboardIncomeVsExpensesChart");
+    var doughnutCanvas = document.getElementById("DashboardExpensesByCategoryChart");
+    if (!barCanvas || !doughnutCanvas) return;
+    var now = new Date();
+    var monthStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    var incomeResult = await getWeeklyIncome(monthStr);
+    var expensesResult = getWeeklyExpenses(monthStr);
+    var categoryResult = getExpensesByCategory(monthStr);
+    if (dashboardIncomeVsExpensesChart) {
+        dashboardIncomeVsExpensesChart.destroy();
+        dashboardIncomeVsExpensesChart = null;
+    }
+    var barCtx = barCanvas.getContext("2d");
+    dashboardIncomeVsExpensesChart = new Chart(barCtx, {
+        type: "bar",
+        data: {
+            labels: incomeResult.labels,
+            datasets: [
+                {
+                    label: "Income (£)",
+                    data: incomeResult.data,
+                    backgroundColor: "rgba(76, 175, 80, 0.7)",
+                    borderColor: "rgb(76, 175, 80)",
+                    borderWidth: 1,
+                    borderRadius: 6,
+                    borderSkipped: false,
+                    barThickness: "flex",
+                    maxBarThickness: 50
+                },
+                {
+                    label: "Expenses (£)",
+                    data: expensesResult.data,
+                    backgroundColor: "rgba(244, 67, 54, 0.7)",
+                    borderColor: "rgb(244, 67, 54)",
+                    borderWidth: 1,
+                    borderRadius: 6,
+                    borderSkipped: false,
+                    barThickness: "flex",
+                    maxBarThickness: 50
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: {
+                duration: 1000,
+                easing: "easeOutQuart"
+            },
+            scales: {
+                x: {
+                    title: { display: true, text: "Week of month", color: "#A6A6A6" },
+                    ticks: { color: "#A6A6A6", maxRotation: 0 }
+                },
+                y: {
+                    title: { display: true, text: "£", color: "#A6A6A6" },
+                    ticks: { color: "#A6A6A6", callback: function(v) { return "£" + v; } },
+                    beginAtZero: true
+                }
+            },
+            plugins: {
+                legend: { display: true, position: "top", labels: { color: "#A6A6A6" } }
+            }
+        }
+    });
+    if (dashboardExpensesByCategoryChart) {
+        dashboardExpensesByCategoryChart.destroy();
+        dashboardExpensesByCategoryChart = null;
+    }
+    if (categoryResult.labels.length > 0 && categoryResult.data.length > 0) {
+        var doughnutCtx = doughnutCanvas.getContext("2d");
+        var colors = createChartColors();
+        dashboardExpensesByCategoryChart = new Chart(doughnutCtx, {
+            type: "doughnut",
+            data: {
+                labels: categoryResult.labels,
+                datasets: [{
+                    data: categoryResult.data,
+                    backgroundColor: colors.background,
+                    borderColor: colors.border,
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: {
+                    duration: 1000,
+                    animateRotate: true,
+                    animateScale: true,
+                    easing: "easeOutQuart"
+                },
+                plugins: {
+                    legend: { display: true, position: "bottom", labels: { color: "#A6A6A6" } }
+                },
+                cutout: "60%"
+            }
+        });
+    }
+}
+
+/**
  * Creates chart colors based on theme
  * @returns {Object} Object containing background and border colors
  */
@@ -4159,7 +6626,11 @@ function getChartOptions() {
         maintainAspectRatio: false,
         animation: {
             duration: 1200,
-            easing: 'easeOutQuart'
+            easing: "easeOutQuart"
+        },
+        transitions: {
+            active: { animation: { duration: 800 } },
+            resize: { animation: { duration: 0 } }
         },
         plugins: {
             legend: {
